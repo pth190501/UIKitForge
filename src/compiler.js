@@ -1,4 +1,5 @@
 import { compileUIKit as compileCore } from './compiler-core.js'
+import { applySwiftPreview } from './preview.js'
 
 export function compileUIKit(figmaData, requestedRootClass = '') {
   const result = compileCore(figmaData, requestedRootClass)
@@ -14,7 +15,89 @@ export function compileUIKit(figmaData, requestedRootClass = '') {
     })
   )
 
+  bindComponentSwiftLivePreview(result)
+
   return result
+}
+
+function bindComponentSwiftLivePreview(result) {
+  for (const file of result.files || []) {
+    if (file.language !== 'swift' || file.kind !== 'component') continue
+
+    const className = String(file.name || '').replace(/\.swift$/i, '')
+    const basePreview = result.componentPreviews?.[className]
+    if (!className || !basePreview) continue
+
+    let source = String(file.content || '')
+
+    const sync = () => {
+      const livePreview = applySwiftPreview(basePreview, source)
+      result.componentPreviews[className] = livePreview
+      syncComponentInstances(result.previewRoot, className, livePreview)
+      schedulePreviewRefresh()
+    }
+
+    Object.defineProperty(file, 'content', {
+      configurable: true,
+      enumerable: true,
+      get() {
+        return source
+      },
+      set(value) {
+        source = String(value ?? '')
+        sync()
+      }
+    })
+
+    // Apply the generated Swift once so runtime-only styles are represented
+    // in the parent preview before the user edits anything.
+    sync()
+  }
+}
+
+function syncComponentInstances(root, className, componentPreview) {
+  if (!root || !componentPreview) return
+
+  if (root.kind === 'component' && root.className === className) {
+    root.style = {
+      ...(root.style || {}),
+      ...(cloneValue(componentPreview.style) || {})
+    }
+
+    if (componentPreview.hidden == null) delete root.hidden
+    else root.hidden = componentPreview.hidden
+
+    root.previewChildren = cloneValue(componentPreview.children || [])
+  }
+
+  for (const child of root.children || []) {
+    syncComponentInstances(child, className, componentPreview)
+  }
+}
+
+function schedulePreviewRefresh() {
+  if (typeof window === 'undefined') return
+
+  const refresh = () => {
+    try {
+      window.dispatchEvent(new Event('resize'))
+    } catch {
+      // Browser preview refresh is best-effort; generated files remain valid.
+    }
+  }
+
+  if (typeof window.requestAnimationFrame === 'function') {
+    window.requestAnimationFrame(refresh)
+  } else {
+    setTimeout(refresh, 0)
+  }
+}
+
+function cloneValue(value) {
+  if (value == null) return value
+  return typeof structuredClone === 'function'
+    ? structuredClone(value)
+    : JSON.parse(JSON.stringify(value))
 }
 
 function hydrateComponentPreviews(node, rawNodes) {
