@@ -18,7 +18,8 @@ UIKitForge is an experimental web IDE that reads a Figma node using a user-provi
 - Generates `IBOutlet` declarations and XIB outlet connections.
 - Infers Auto Layout rules from Figma constraints (`LEFT`, `RIGHT`, `LEFT_RIGHT`, `CENTER`, `TOP`, `BOTTOM`, `TOP_BOTTOM`).
 - Browser preview for frames, text, fills, radius, borders, shadows, opacity and component boundaries.
-- Live Swift preview for common assignments such as:
+- Live Swift preview for main views and generated components, including updates reflected inside the parent hierarchy.
+- Live Swift preview recognizes common assignments such as:
   - `backgroundColor`
   - `textColor`
   - `layer.cornerRadius`
@@ -57,12 +58,18 @@ For a new repository, open:
 
 **Settings → Pages → Build and deployment → Source → GitHub Actions**
 
-Then run the workflow or push to `main`.
+Once Pages is enabled, every push to `main` automatically runs tests, builds the Vite app, and deploys the generated `dist` artifact to GitHub Pages. Manual `workflow_dispatch` remains available as a fallback.
 
 The Vite base path is configured for:
 
 ```text
 /UIKitForge/
+```
+
+Expected project URL:
+
+```text
+https://pth190501.github.io/UIKitForge/
 ```
 
 ## Current architecture
@@ -100,7 +107,6 @@ Other current limitations:
 
 - Figma image fills create `UIImageView` placeholders; image binary export is not implemented yet.
 - Complex vectors, masks, blend modes, gradients and advanced effects are not fully translated yet.
-- Component Swift files are generated and editable, but isolated component hot-preview is not wired yet; the main generated Swift file is live.
 - XIB edits do not currently re-parse into Browser Preview.
 - Browser preview does not execute arbitrary Swift. It recognizes a safe/common subset of UIKit style assignments.
 - Whole-file Figma URLs compile the first visible top-level node. Node-specific URLs are strongly recommended.
@@ -112,7 +118,7 @@ Other current limitations:
 - Figma image endpoint + asset download/export.
 - Gradients.
 - Better Auto Layout / Figma Auto Layout mapping.
-- Isolated component live preview.
+- Isolated component preview polish.
 - XIB XML → preview re-parser.
 - Component dependency graph.
 - Reference image pulled automatically from Figma node render.
