@@ -1,22 +1,28 @@
 import { compileUIKit as compileCore } from './compiler-core.js'
+import { figmaPaintToCss, firstVisiblePaint } from './figma.js'
 import { applySwiftPreview } from './preview.js'
 
 export function compileUIKit(figmaData, requestedRootClass = '') {
   const result = compileCore(figmaData, requestedRootClass)
   const rawNodes = new Map()
   walkRaw(figmaData.root, node => rawNodes.set(node.id, node))
+  const imageMap = figmaData.imageMap || {}
 
-  hydrateComponentPreviews(result.previewRoot, rawNodes)
+  hydrateRichPreview(result.previewRoot, rawNodes, imageMap)
+  hydrateComponentPreviews(result.previewRoot, rawNodes, imageMap)
 
   result.componentPreviews = Object.fromEntries(
     (result.components || []).map(component => {
       const raw = findFirstInstance(figmaData.root, component.componentId)
-      return [component.className, raw ? rawToPreview(raw, null) : null]
+      if (!raw) return [component.className, null]
+      const preview = rawToPreview(raw, null, imageMap)
+      dedupeOutlets(preview)
+      return [component.className, preview]
     })
   )
 
+  if (figmaData.imageFillWarning) result.warnings.push(figmaData.imageFillWarning)
   bindComponentSwiftLivePreview(result)
-
   return result
 }
 
@@ -40,17 +46,13 @@ function bindComponentSwiftLivePreview(result) {
     Object.defineProperty(file, 'content', {
       configurable: true,
       enumerable: true,
-      get() {
-        return source
-      },
+      get() { return source },
       set(value) {
         source = String(value ?? '')
         sync()
       }
     })
 
-    // Apply the generated Swift once so runtime-only styles are represented
-    // in the parent preview before the user edits anything.
     sync()
   }
 }
@@ -59,10 +61,9 @@ function syncComponentInstances(root, className, componentPreview) {
   if (!root || !componentPreview) return
 
   if (root.kind === 'component' && root.className === className) {
-    root.style = {
-      ...(root.style || {}),
-      ...(cloneValue(componentPreview.style) || {})
-    }
+    root.style = { ...(root.style || {}), ...(cloneValue(componentPreview.style) || {}) }
+    root.layout = cloneValue(componentPreview.layout || root.layout || {})
+    root.meta = { ...(root.meta || {}), ...(cloneValue(componentPreview.meta) || {}) }
 
     if (componentPreview.hidden == null) delete root.hidden
     else root.hidden = componentPreview.hidden
@@ -70,27 +71,16 @@ function syncComponentInstances(root, className, componentPreview) {
     root.previewChildren = cloneValue(componentPreview.children || [])
   }
 
-  for (const child of root.children || []) {
-    syncComponentInstances(child, className, componentPreview)
-  }
+  for (const child of root.children || []) syncComponentInstances(child, className, componentPreview)
 }
 
 function schedulePreviewRefresh() {
   if (typeof window === 'undefined') return
-
   const refresh = () => {
-    try {
-      window.dispatchEvent(new Event('resize'))
-    } catch {
-      // Browser preview refresh is best-effort; generated files remain valid.
-    }
+    try { window.dispatchEvent(new CustomEvent('uikitforge:preview-refresh')) } catch {}
   }
-
-  if (typeof window.requestAnimationFrame === 'function') {
-    window.requestAnimationFrame(refresh)
-  } else {
-    setTimeout(refresh, 0)
-  }
+  if (typeof window.requestAnimationFrame === 'function') window.requestAnimationFrame(refresh)
+  else setTimeout(refresh, 0)
 }
 
 function cloneValue(value) {
@@ -100,7 +90,23 @@ function cloneValue(value) {
     : JSON.parse(JSON.stringify(value))
 }
 
-function hydrateComponentPreviews(node, rawNodes) {
+function hydrateRichPreview(node, rawNodes, imageMap) {
+  if (!node) return
+  const raw = node.figmaId ? rawNodes.get(node.figmaId) : null
+  if (raw) {
+    node.style = { ...(node.style || {}), ...extractStyle(raw, imageMap) }
+    node.layout = extractLayout(raw)
+    node.meta = {
+      ...(node.meta || {}),
+      layoutPositioning: raw.layoutPositioning || node.meta?.layoutPositioning || 'AUTO',
+      clipsContent: Boolean(raw.clipsContent),
+      blendMode: raw.blendMode || 'PASS_THROUGH'
+    }
+  }
+  for (const child of node.children || []) hydrateRichPreview(child, rawNodes, imageMap)
+}
+
+function hydrateComponentPreviews(node, rawNodes, imageMap) {
   if (!node) return
 
   if (node.kind === 'component' && node.figmaId) {
@@ -108,16 +114,15 @@ function hydrateComponentPreviews(node, rawNodes) {
     if (raw) {
       node.previewChildren = (raw.children || [])
         .filter(child => child.visible !== false)
-        .map(child => rawToPreview(child, raw))
+        .map(child => rawToPreview(child, raw, imageMap))
+      dedupeOutlets({ children: node.previewChildren, outlet: '__root' })
     }
   }
 
-  for (const child of node.children || []) {
-    hydrateComponentPreviews(child, rawNodes)
-  }
+  for (const child of node.children || []) hydrateComponentPreviews(child, rawNodes, imageMap)
 }
 
-function rawToPreview(node, parent) {
+function rawToPreview(node, parent, imageMap) {
   const abs = node.absoluteBoundingBox || node.absoluteRenderBounds || fallbackBounds(node)
   const parentAbs = parent?.absoluteBoundingBox || parent?.absoluteRenderBounds || null
   const frame = {
@@ -127,7 +132,13 @@ function rawToPreview(node, parent) {
     height: round(abs.height || 1)
   }
 
-  const kind = node.type === 'TEXT' ? 'label' : hasImageFill(node) ? 'image' : 'view'
+  const visibleChildren = (node.children || []).filter(child => child.visible !== false)
+  const kind = node.type === 'TEXT'
+    ? 'label'
+    : hasImageFill(node) && visibleChildren.length === 0
+      ? 'image'
+      : 'view'
+
   const preview = {
     id: `PV-${String(node.id || Math.random()).replace(/[^A-Za-z0-9]/g, '')}`,
     figmaId: node.id || '',
@@ -139,21 +150,29 @@ function rawToPreview(node, parent) {
     frame,
     constraints: inferConstraints(node, parent, frame),
     text: node.type === 'TEXT' ? String(node.characters || '') : '',
-    style: extractStyle(node),
+    style: extractStyle(node, imageMap),
+    layout: extractLayout(node),
+    meta: {
+      hasImageFill: hasImageFill(node),
+      preservesChildrenOverImageFill: hasImageFill(node) && visibleChildren.length > 0,
+      layoutPositioning: node.layoutPositioning || 'AUTO',
+      clipsContent: Boolean(node.clipsContent),
+      blendMode: node.blendMode || 'PASS_THROUGH'
+    },
     children: []
   }
 
-  preview.children = (node.children || [])
-    .filter(child => child.visible !== false)
-    .map(child => rawToPreview(child, node))
-
-  dedupeOutlets(preview)
+  preview.children = visibleChildren.map(child => rawToPreview(child, node, imageMap))
   return preview
 }
 
-function extractStyle(node) {
-  const fill = firstSolid(node.fills)
-  const stroke = firstSolid(node.strokes)
+function extractStyle(node, imageMap = {}) {
+  const visibleFills = (node.fills || []).filter(item => item?.visible !== false)
+  const visibleStrokes = (node.strokes || []).filter(item => item?.visible !== false)
+  const firstFill = firstVisiblePaint(visibleFills)
+  const solidTextFill = visibleFills.find(item => item.type === 'SOLID')
+  const stroke = visibleStrokes.find(item => item.type === 'SOLID')
+  const imagePaint = visibleFills.find(item => item.type === 'IMAGE' && item.imageRef)
   const effect = (node.effects || []).find(item => item?.visible !== false && item?.type === 'DROP_SHADOW')
   const textStyle = node.style || {}
   const radius = Number.isFinite(node.cornerRadius)
@@ -163,18 +182,24 @@ function extractStyle(node) {
       : 0
 
   return {
-    background: paintToRgba(fill),
-    textColor: node.type === 'TEXT' ? paintToRgba(fill) || 'rgba(0, 0, 0, 1)' : null,
-    borderColor: paintToRgba(stroke),
-    borderWidth: node.strokeWeight || 0,
+    background: firstFill?.type === 'IMAGE' ? null : figmaPaintToCss(firstFill),
+    textColor: node.type === 'TEXT' ? figmaPaintToCss(solidTextFill) || 'rgba(0, 0, 0, 1)' : null,
+    borderColor: figmaPaintToCss(stroke),
+    borderWidth: round(node.strokeWeight || 0),
     radius: round(radius || 0),
+    cornerRadii: Array.isArray(node.rectangleCornerRadii) ? node.rectangleCornerRadii.map(round) : null,
     opacity: node.opacity == null ? 1 : node.opacity,
     fontSize: round(textStyle.fontSize || 14),
     fontFamily: textStyle.fontFamily || 'System',
     fontWeight: normalizeFontWeight(textStyle.fontWeight || 400),
     lineHeight: round(textStyle.lineHeightPx || 0),
+    letterSpacing: round(textStyle.letterSpacing || 0),
     textAlign: String(textStyle.textAlignHorizontal || 'LEFT').toLowerCase(),
-    numberOfLines: textStyle.textAutoResize === 'HEIGHT' ? 0 : 1,
+    numberOfLines: textStyle.textAutoResize === 'HEIGHT' || textStyle.textAutoResize === 'WIDTH_AND_HEIGHT' ? 0 : 1,
+    imageRef: imagePaint?.imageRef || null,
+    imageUrl: imagePaint?.imageRef ? imageMap[imagePaint.imageRef] || null : null,
+    imageScaleMode: imagePaint?.scaleMode || null,
+    clipsContent: Boolean(node.clipsContent),
     shadow: effect ? {
       x: round(effect.offset?.x || 0),
       y: round(effect.offset?.y || 0),
@@ -182,6 +207,21 @@ function extractStyle(node) {
       spread: round(effect.spread || 0),
       color: colorToRgba(effect.color)
     } : null
+  }
+}
+
+function extractLayout(node) {
+  return {
+    mode: node.layoutMode || 'NONE',
+    itemSpacing: round(node.itemSpacing || 0),
+    paddingLeft: round(node.paddingLeft || 0),
+    paddingRight: round(node.paddingRight || 0),
+    paddingTop: round(node.paddingTop || 0),
+    paddingBottom: round(node.paddingBottom || 0),
+    primaryAxisAlignItems: node.primaryAxisAlignItems || 'MIN',
+    counterAxisAlignItems: node.counterAxisAlignItems || 'MIN',
+    layoutSizingHorizontal: node.layoutSizingHorizontal || null,
+    layoutSizingVertical: node.layoutSizingVertical || null
   }
 }
 
@@ -198,12 +238,12 @@ function inferConstraints(node, parent, frame) {
   const result = []
 
   if (horizontal === 'RIGHT') result.push({ axis: 'h', type: 'trailing', constant: right }, { axis: 'h', type: 'width', constant: frame.width })
-  else if (horizontal === 'LEFT_RIGHT') result.push({ axis: 'h', type: 'leading', constant: frame.x }, { axis: 'h', type: 'trailing', constant: right })
+  else if (horizontal === 'LEFT_RIGHT' || horizontal === 'SCALE') result.push({ axis: 'h', type: 'leading', constant: frame.x }, { axis: 'h', type: 'trailing', constant: right })
   else if (horizontal === 'CENTER') result.push({ axis: 'h', type: 'centerX', constant: centerX }, { axis: 'h', type: 'width', constant: frame.width })
   else result.push({ axis: 'h', type: 'leading', constant: frame.x }, { axis: 'h', type: 'width', constant: frame.width })
 
   if (vertical === 'BOTTOM') result.push({ axis: 'v', type: 'bottom', constant: bottom }, { axis: 'v', type: 'height', constant: frame.height })
-  else if (vertical === 'TOP_BOTTOM') result.push({ axis: 'v', type: 'top', constant: frame.y }, { axis: 'v', type: 'bottom', constant: bottom })
+  else if (vertical === 'TOP_BOTTOM' || vertical === 'SCALE') result.push({ axis: 'v', type: 'top', constant: frame.y }, { axis: 'v', type: 'bottom', constant: bottom })
   else if (vertical === 'CENTER') result.push({ axis: 'v', type: 'centerY', constant: centerY }, { axis: 'v', type: 'height', constant: frame.height })
   else result.push({ axis: 'v', type: 'top', constant: frame.y }, { axis: 'v', type: 'height', constant: frame.height })
 
@@ -226,17 +266,6 @@ function walkRaw(node, visitor) {
 
 function hasImageFill(node) {
   return (node.fills || []).some(fill => fill?.visible !== false && fill?.type === 'IMAGE')
-}
-
-function firstSolid(paints = []) {
-  return (paints || []).find(paint => paint?.visible !== false && paint?.type === 'SOLID') || null
-}
-
-function paintToRgba(paint) {
-  if (!paint?.color) return null
-  const { r = 0, g = 0, b = 0, a = 1 } = paint.color
-  const alpha = paint.opacity == null ? a : a * paint.opacity
-  return `rgba(${Math.round(r * 255)}, ${Math.round(g * 255)}, ${Math.round(b * 255)}, ${Number(alpha.toFixed(3))})`
 }
 
 function colorToRgba(color) {
@@ -264,19 +293,16 @@ function sanitizeOutletName(value) {
 
 function dedupeOutlets(root) {
   const used = new Map()
-  const nodes = []
   const visit = node => {
-    nodes.push(node)
-    for (const child of node.children || []) visit(child)
+    for (const child of node.children || []) {
+      const base = child.outlet || 'generatedView'
+      const count = (used.get(base) || 0) + 1
+      used.set(base, count)
+      if (count > 1) child.outlet = `${base}${count}`
+      visit(child)
+    }
   }
   visit(root)
-
-  for (const node of nodes.slice(1)) {
-    const base = node.outlet
-    const count = (used.get(base) || 0) + 1
-    used.set(base, count)
-    if (count > 1) node.outlet = `${base}${count}`
-  }
 }
 
 function normalizeFontWeight(value) {

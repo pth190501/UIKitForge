@@ -56,17 +56,44 @@ export function applySwiftPreview(sourceRoot, swiftCode) {
 
 export function renderUIKitPreview(container, root, options = {}) {
   if (!container || !root) return
-  const { selectedId = null, onSelect = null, referenceImage = null, overlayOpacity = 0 } = options
+
+  const {
+    selectedId = null,
+    onSelect = null,
+    referenceImage = null,
+    overlayOpacity = 0,
+    zoom = 'fit',
+    showGrid = true,
+    showOutlines = false,
+    showSafeArea = false,
+    onMetrics = null
+  } = options
+
   container.innerHTML = ''
+  container.classList.toggle('grid-enabled', Boolean(showGrid))
+  container.classList.toggle('outlines-enabled', Boolean(showOutlines))
+
+  const rootWidth = Math.max(1, root.frame?.width || 390)
+  const rootHeight = Math.max(1, root.frame?.height || 844)
+  const availableWidth = Math.max(240, container.clientWidth - 72)
+  const availableHeight = Math.max(340, container.clientHeight - 96)
+  const fitScale = Math.min(1.6, availableWidth / rootWidth, availableHeight / rootHeight)
+  const scale = zoom === 'fit'
+    ? fitScale
+    : Math.max(0.2, Math.min(3, Number(zoom) || 1))
+
+  const phoneLike = rootWidth >= 300 && rootWidth <= 500 && rootHeight / rootWidth >= 1.55
 
   const viewport = document.createElement('div')
   viewport.className = 'preview-viewport'
 
-  const rootWidth = Math.max(1, root.frame?.width || 390)
-  const rootHeight = Math.max(1, root.frame?.height || 844)
-  const availableWidth = Math.max(220, container.clientWidth - 48)
-  const availableHeight = Math.max(320, container.clientHeight - 48)
-  const scale = Math.min(1.35, availableWidth / rootWidth, availableHeight / rootHeight)
+  const board = document.createElement('div')
+  board.className = `preview-board ${phoneLike ? 'is-device' : 'is-artboard'}`
+
+  const caption = document.createElement('div')
+  caption.className = 'preview-board-caption'
+  caption.innerHTML = `<span>${escapeHtml(root.name || 'UIKit View')}</span><strong>${formatNumber(rootWidth)} × ${formatNumber(rootHeight)}</strong>`
+  board.appendChild(caption)
 
   const stageShell = document.createElement('div')
   stageShell.className = 'preview-stage-shell'
@@ -83,6 +110,12 @@ export function renderUIKitPreview(container, root, options = {}) {
   const uiRoot = renderNode(root, true, selectedId, onSelect)
   stage.appendChild(uiRoot)
 
+  if (showSafeArea && phoneLike) {
+    const safeArea = document.createElement('div')
+    safeArea.className = 'safe-area-guide'
+    stage.appendChild(safeArea)
+  }
+
   if (referenceImage) {
     const image = document.createElement('img')
     image.className = 'reference-overlay'
@@ -93,15 +126,25 @@ export function renderUIKitPreview(container, root, options = {}) {
   }
 
   stageShell.appendChild(stage)
-  viewport.appendChild(stageShell)
+  board.appendChild(stageShell)
+
+  const metrics = document.createElement('div')
+  metrics.className = 'preview-board-metrics'
+  metrics.innerHTML = `<span>${Math.round(scale * 100)}%</span><span>${countVisibleNodes(root)} layers</span>${phoneLike ? '<span>iOS canvas</span>' : '<span>artboard</span>'}`
+  board.appendChild(metrics)
+
+  viewport.appendChild(board)
   container.appendChild(viewport)
+  onMetrics?.({ scale, fitScale, rootWidth, rootHeight, phoneLike })
 }
 
 function renderNode(node, isRoot, selectedId, onSelect) {
   const element = document.createElement('div')
   element.className = `uikit-node uikit-${node.kind || 'view'}`
+  element.dataset.nodeId = node.id || ''
   element.dataset.figmaId = node.figmaId || ''
   element.dataset.outlet = node.outlet || ''
+  element.dataset.nodeName = node.name || ''
   element.title = `${node.name || 'View'}${node.outlet ? ` · ${node.outlet}` : ''}`
 
   if (node.hidden) element.style.display = 'none'
@@ -123,10 +166,10 @@ function renderNode(node, isRoot, selectedId, onSelect) {
 
   if (node.kind === 'label') {
     element.textContent = node.text || ''
-  } else if (node.kind === 'image') {
+  } else if (node.kind === 'image' && !node.style?.imageUrl) {
     const badge = document.createElement('span')
     badge.className = 'image-placeholder'
-    badge.textContent = 'IMG'
+    badge.innerHTML = '<span class="image-placeholder-icon">▧</span><span>IMAGE</span>'
     element.appendChild(badge)
   }
 
@@ -152,9 +195,18 @@ function renderNode(node, isRoot, selectedId, onSelect) {
 function applyNodeStyle(element, node) {
   const style = node.style || {}
   element.style.opacity = style.opacity == null ? '1' : String(style.opacity)
+
   if (style.background) element.style.background = style.background
+  if (style.imageUrl) {
+    element.style.backgroundImage = `url("${String(style.imageUrl).replace(/"/g, '%22')}")`
+    element.style.backgroundRepeat = 'no-repeat'
+    element.style.backgroundPosition = 'center'
+    element.style.backgroundSize = imageScaleMode(style.imageScaleMode)
+  }
+
   if (style.radius) element.style.borderRadius = `${style.radius}px`
   if (style.borderColor && style.borderWidth) element.style.border = `${style.borderWidth}px solid ${style.borderColor}`
+  if (style.clipsContent || style.radius) element.style.overflow = 'hidden'
 
   if (style.shadow) {
     const shadow = style.shadow
@@ -167,6 +219,7 @@ function applyNodeStyle(element, node) {
     element.style.fontSize = `${style.fontSize || 14}px`
     element.style.fontWeight = String(style.fontWeight || 400)
     if (style.lineHeight > 0) element.style.lineHeight = `${style.lineHeight}px`
+    if (style.letterSpacing) element.style.letterSpacing = `${style.letterSpacing}px`
     element.style.textAlign = cssTextAlign(style.textAlign)
     element.style.display = '-webkit-box'
     element.style.webkitBoxOrient = 'vertical'
@@ -174,9 +227,7 @@ function applyNodeStyle(element, node) {
     if (style.numberOfLines > 0) element.style.webkitLineClamp = String(style.numberOfLines)
   }
 
-  if (node.kind === 'component') {
-    element.classList.add('component-boundary')
-  }
+  if (node.kind === 'component') element.classList.add('component-boundary')
 }
 
 export function walkPreview(root, visitor) {
@@ -188,15 +239,34 @@ export function walkPreview(root, visitor) {
 export function describeNode(node) {
   if (!node) return null
   return {
+    id: node.id,
+    figmaId: node.figmaId,
     name: node.name,
     outlet: node.outlet || 'contentView',
     type: node.type,
     kind: node.kind,
     className: node.className,
-    frame: node.frame,
+    frame: node.frame || {},
     constraints: node.constraints || [],
-    style: node.style || {}
+    style: node.style || {},
+    layout: node.layout || {},
+    meta: node.meta || {}
   }
+}
+
+function countVisibleNodes(root) {
+  let count = 0
+  walkPreview(root, node => {
+    if (!node.hidden) count += 1
+  })
+  return count
+}
+
+function imageScaleMode(value) {
+  const mode = String(value || '').toUpperCase()
+  if (mode === 'FIT') return 'contain'
+  if (mode === 'TILE') return 'auto'
+  return 'cover'
 }
 
 function matchColor(source, lhsPattern, allowsCgColor = false) {
@@ -252,4 +322,18 @@ function cssTextAlign(value) {
 
 function escapeRegExp(value) {
   return String(value).replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+}
+
+function escapeHtml(value) {
+  return String(value ?? '')
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#039;')
+}
+
+function formatNumber(value) {
+  const number = Number(value)
+  return Number.isFinite(number) ? Number(number.toFixed(1)).toString() : '—'
 }

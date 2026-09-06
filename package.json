@@ -1,12 +1,12 @@
 {
   "name": "uikitforge",
   "private": true,
-  "version": "0.1.0",
+  "version": "0.2.0",
   "type": "module",
   "scripts": {
     "dev": "vite",
     "build": "vite build",
-    "test": "node tests/component-live-preview.test.mjs",
+    "test": "node tests/component-live-preview.test.mjs && node tests/preview-richness.test.mjs",
     "preview": "vite preview"
   },
   "dependencies": {
