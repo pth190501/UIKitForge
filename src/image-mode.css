@@ -1,0 +1,67 @@
+.mode-strip {
+  min-height: 50px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  padding: 8px 18px;
+  border-bottom: 1px solid var(--border);
+  background: linear-gradient(180deg, rgba(15,21,36,.96), rgba(10,15,27,.96));
+}
+.mode-copy { display: grid; grid-template-columns: auto auto; align-items: center; column-gap: 8px; row-gap: 2px; }
+.mode-copy .eyebrow { grid-column: 1 / -1; }
+.mode-copy strong { font-size: 12px; color: #eef2ff; }
+.mode-copy small { color: #748198; font-size: 10px; }
+.mode-options { display: flex; align-items: center; gap: 6px; }
+.mode-pill { padding: 6px 9px; border: 1px solid #263148; border-radius: 999px; color: #64718a; font-size: 9px; font-weight: 800; letter-spacing: .06em; background: #0a0f1b; transition: .18s ease; }
+.mode-pill.active { color: #dfe5ff; border-color: rgba(108,126,255,.45); background: rgba(91,109,247,.13); box-shadow: inset 0 0 0 1px rgba(113,132,255,.06); }
+
+.source-panel-v3 {
+  grid-template-columns: minmax(240px, 1.05fr) minmax(320px, 1.5fr) minmax(250px, 1.1fr) minmax(150px, .65fr) 150px;
+  align-items: end;
+}
+.field.dimmed { opacity: .48; }
+.drop-field { position: relative; min-height: 72px; }
+.drop-field > input[type="file"] { position: absolute; inset: 19px 0 0; width: 100%; height: 53px; opacity: 0; cursor: pointer; z-index: 2; }
+.drop-copy {
+  height: 53px;
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  gap: 3px;
+  padding: 0 12px 0 42px;
+  border: 1px dashed #33415e;
+  border-radius: 10px;
+  background: linear-gradient(180deg, #0a101d, #090e19);
+  color: #98a5ba;
+  position: relative;
+  overflow: hidden;
+}
+.drop-copy::before {
+  content: '⇧';
+  position: absolute;
+  left: 13px;
+  width: 20px;
+  height: 20px;
+  display: grid;
+  place-items: center;
+  border-radius: 6px;
+  color: #9eabff;
+  background: rgba(92,108,247,.13);
+  border: 1px solid rgba(92,108,247,.2);
+  font-size: 12px;
+  font-weight: 800;
+}
+.drop-copy strong { font-size: 11px; color: #c6d0e3; }
+.drop-copy span { font-size: 9px; color: #63718a; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
+.drop-field.dragging .drop-copy { border-color: #7285ff; background: rgba(91,109,247,.09); box-shadow: 0 0 0 3px rgba(91,109,247,.08); }
+.drop-field.has-file .drop-copy { border-style: solid; border-color: rgba(75,217,159,.34); background: rgba(75,217,159,.055); }
+.drop-field.has-file .drop-copy::before { content: '✓'; color: #63d8aa; background: rgba(75,217,159,.12); border-color: rgba(75,217,159,.2); }
+
+.status-progress { width: 150px; height: 3px; overflow: hidden; border-radius: 999px; background: #171e2c; }
+.status-progress i { display: block; width: 0; height: 100%; border-radius: inherit; background: linear-gradient(90deg, #7083ff, #55d5b0); transition: width .2s ease; }
+
+@media (max-width: 1450px) {
+  .source-panel-v3 { grid-template-columns: minmax(210px, 1fr) minmax(280px, 1.35fr) minmax(220px, 1fr) 145px 140px; }
+  .mode-copy small { display: none; }
+}
