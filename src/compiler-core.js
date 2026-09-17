@@ -573,6 +573,7 @@ function sanitizeOutletName(value) {
   let result = parts.map((part, index) => index === 0 ? part.charAt(0).toLowerCase() + part.slice(1) : part.charAt(0).toUpperCase() + part.slice(1)).join('') || 'generatedView'
   if (/^[0-9]/.test(result)) result = `view${result}`
   if (SWIFT_KEYWORDS.has(result)) result += 'View'
+  if (result.length < 3) result += 'View' // SwiftLint identifier_name requires >= 3 chars (e.g. a layer named "A")
   return result
 }
 
