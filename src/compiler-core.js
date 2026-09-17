@@ -393,7 +393,11 @@ function generateSwiftStyleLines(root, { includeStatic = false, rootRef = 'conte
       }
       lines.push(`        ${target}font = ${swiftFontExpression(style)}`)
     }
-    if (node.kind === 'image' && includeStatic) lines.push(`        ${target}contentMode = .scaleAspectFit`)
+    if (node.kind === 'image' && includeStatic) {
+      lines.push(`        ${target}contentMode = .scaleAspectFit`)
+      // Tên asset = outlet, khớp với Image(...) bên SwiftUI — xem generateUIKitAssets ở figma.js/main.js.
+      lines.push(`        ${target}image = UIImage(named: ${swiftString(node.outlet)})`)
+    }
     if (style.shadow) {
       lines.push(`        ${target}layer.shadowColor = ${rgbaToSwift(style.shadow.color || 'rgba(0, 0, 0, 0.2)')}.cgColor`)
       lines.push(`        ${target}layer.shadowOpacity = ${formatNumber(alphaFromRgba(style.shadow.color || 'rgba(0,0,0,0.2)'))}`)

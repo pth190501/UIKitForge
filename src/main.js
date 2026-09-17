@@ -270,6 +270,8 @@ async function generateUIKit() {
     if (figmaData.analysisWarnings?.length) compiled.warnings.push(...figmaData.analysisWarnings)
     compiled.warnings = [...new Set(compiled.warnings)]
     compiled.assets = figmaData.assets || []
+    compiled.imageAssetRefs = collectImageAssetRefs(compiled)
+    if (figmaData.assetExportWarning) compiled.warnings.push(figmaData.assetExportWarning)
     state.figmaData = figmaData
     state.compiled = compiled
     state.selectedNodeId = null
@@ -396,6 +398,7 @@ async function downloadAllFiles() {
   const zip = new JSZip()
   for (const file of state.compiled.files) zip.file(file.path, file.content)
   for (const asset of state.compiled.assets || []) addImageAsset(zip, asset)
+  await addFigmaImageAssets(zip, state.compiled.imageAssetRefs || [], state.figmaData?.nodeImageExports)
   if (state.referenceImage) zip.file('References/source-screenshot.png', dataUrlPayload(state.referenceImage), { base64: true })
   zip.file('UIKitForge.generated.json', JSON.stringify({ rootClass: state.compiled.rootClass, components: state.compiled.components, warnings: state.compiled.warnings, source: state.figmaData?.source || null, assets: (state.compiled.assets || []).map(({ dataUrl, ...meta }) => meta) }, null, 2))
   const blob = await zip.generateAsync({ type: 'blob' }); downloadBlob(blob, `${state.compiled.rootClass}-UIKitForge.zip`)
@@ -408,6 +411,46 @@ function addImageAsset(zip, asset) {
   const folder = `Assets.xcassets/${name}.imageset`
   zip.file(`${folder}/${filename}`, dataUrlPayload(asset.dataUrl), { base64: true })
   zip.file(`${folder}/Contents.json`, JSON.stringify({ images: [{ idiom: 'universal', filename, scale: '1x' }, { idiom: 'universal', scale: '2x' }, { idiom: 'universal', scale: '3x' }], info: { author: 'UIKitForge', version: 1 } }, null, 2))
+}
+
+// Node có kind:'image' trong IR (main + component) — outlet của chúng là tên asset mà cả UIKit
+// (UIImage(named:)) và SwiftUI (Image(...)) đều tham chiếu, nên Assets.xcassets phải đặt tên khớp.
+function collectImageAssetRefs(compiled) {
+  const refs = []
+  const walk = node => {
+    if (!node) return
+    if (node.kind === 'image' && node.figmaId) refs.push({ outlet: node.outlet, figmaId: node.figmaId })
+    for (const child of node.children || []) walk(child)
+  }
+  walk(compiled.previewRoot)
+  for (const { ir } of compiled.componentIRs || []) walk(ir)
+  return refs
+}
+
+// Tải PNG @2x/@3x đã export từ Figma (nodeImageExports, xem figma.js) và đóng gói vào
+// Assets.xcassets/<outlet>.imageset — chỉ lúc tải zip, không tải trước lúc compile.
+async function addFigmaImageAssets(zip, refs, nodeImageExports) {
+  if (!nodeImageExports) return
+  const seen = new Set()
+  for (const { outlet, figmaId } of refs) {
+    if (!outlet || seen.has(outlet)) continue
+    const urls = nodeImageExports[figmaId]
+    if (!urls || (!urls['2x'] && !urls['3x'])) continue
+    seen.add(outlet)
+    const folder = `Assets.xcassets/${outlet}.imageset`
+    const images = []
+    for (const scale of ['2x', '3x']) {
+      const url = urls[scale]
+      if (!url) continue
+      try {
+        const blob = await fetch(url).then(response => response.blob())
+        const filename = `${outlet}@${scale}.png`
+        zip.file(`${folder}/${filename}`, blob)
+        images.push({ idiom: 'universal', filename, scale })
+      } catch { /* bỏ qua scale này nếu URL hết hạn/mạng lỗi, các scale khác vẫn export */ }
+    }
+    if (images.length) zip.file(`${folder}/Contents.json`, JSON.stringify({ images, info: { author: 'UIKitForge', version: 1 } }, null, 2))
+  }
 }
 
 function downloadSelectedFile() { const file = currentFile(); if (!file) return; downloadBlob(new Blob([file.content], { type: 'text/plain;charset=utf-8' }), file.name) }

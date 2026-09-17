@@ -57,6 +57,8 @@ export async function fetchFigmaSelection({ figmaUrl, token }) {
     }
   }
 
+  const { nodeImageExports, assetExportWarning } = await fetchNodeImageExports(parsed.fileKey, root, token)
+
   return {
     source: parsed,
     name: payload.name || root.name || 'Figma Selection',
@@ -66,8 +68,44 @@ export async function fetchFigmaSelection({ figmaUrl, token }) {
     styles: payload.styles || {},
     imageMap,
     imageFillWarning,
+    nodeImageExports,
+    assetExportWarning,
     raw: payload
   }
+}
+
+// Render PNG @2x/@3x cho từng node có IMAGE fill trực tiếp (không có con) — đây là đúng những node
+// compiler phân loại kind:'image' (xem hasImageFill trong compiler-core.js). Khớp theo Figma node id;
+// main.js sẽ nối id này với outlet sau khi compile để đặt tên file trong Assets.xcassets.
+async function fetchNodeImageExports(fileKey, root, token) {
+  const nodeIds = collectImageFillNodeIds(root)
+  if (!nodeIds.length) return { nodeImageExports: {}, assetExportWarning: null }
+
+  try {
+    const ids = nodeIds.join(',')
+    const [png2x, png3x] = await Promise.all([
+      figmaGet(`${FIGMA_API}/images/${encodeURIComponent(fileKey)}?ids=${encodeURIComponent(ids)}&scale=2&format=png`, token),
+      figmaGet(`${FIGMA_API}/images/${encodeURIComponent(fileKey)}?ids=${encodeURIComponent(ids)}&scale=3&format=png`, token)
+    ])
+    const nodeImageExports = {}
+    for (const id of nodeIds) {
+      const url2x = png2x?.images?.[id]
+      const url3x = png3x?.images?.[id]
+      if (url2x || url3x) nodeImageExports[id] = { '2x': url2x || null, '3x': url3x || null }
+    }
+    return { nodeImageExports, assetExportWarning: null }
+  } catch (error) {
+    return { nodeImageExports: {}, assetExportWarning: `Image asset export (@2x/@3x) failed: ${error?.message || 'unknown error'}` }
+  }
+}
+
+function collectImageFillNodeIds(root) {
+  const ids = []
+  walkFigma(root, node => {
+    const hasNoRenderableChildren = !(node.children || []).some(child => child.visible !== false)
+    if (hasNoRenderableChildren && (node.fills || []).some(fill => fill?.visible !== false && fill?.type === 'IMAGE' && fill.imageRef)) ids.push(node.id)
+  })
+  return ids
 }
 
 async function figmaGet(endpoint, token) {
