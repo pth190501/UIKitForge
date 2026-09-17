@@ -97,14 +97,13 @@ assert.equal(imageContainer.kind, 'view', 'image-filled containers must keep the
 assert.equal(imageContainer.children.length, 1, 'image-filled container children must not be dropped')
 assert.equal(imageContainer.children[0].kind, 'label')
 assert.equal(leafImage.kind, 'image', 'leaf image fills should still map to UIImageView')
-assert.ok(
-  leafImage.constraints.some(item => item.type === 'topToBottom' && item.targetFigmaId === '31775:52175'),
-  'vertical Figma Auto Layout should become sibling-to-sibling XIB constraints'
-)
+assert.equal(layoutCompiled.previewRoot.stack?.axis, 'vertical', 'vertical Figma Auto Layout should become a UIStackView')
+assert.equal(layoutCompiled.previewRoot.stack.spacing, 12)
+assert.ok(leafImage.arranged, 'auto layout children should be stack arranged subviews')
 
 const targetXib = layoutCompiled.files.find(file => file.name === 'TargetView.xib')?.content || ''
 assert.match(targetXib, /<label[^>]+text="Preserve me"/)
-assert.match(targetXib, /firstAttribute="top" secondItem="UF-3177552175" secondAttribute="bottom" constant="12"/)
+assert.match(targetXib, /<stackView [^>]*axis="vertical"[^>]*spacing="12"/)
 assert.ok(layoutCompiled.warnings.some(item => item.includes('preserved its child hierarchy')))
 
 const componentSetCompiled = compileUIKit({ root: {

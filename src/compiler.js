@@ -1,9 +1,12 @@
 import { compileUIKit as compileCore } from './compiler-core.js'
 import { figmaPaintToCss, firstVisiblePaint } from './figma.js'
 import { applySwiftPreview } from './preview.js'
+import { generateSwiftUIFiles } from './swiftui.js'
 
-export function compileUIKit(figmaData, requestedRootClass = '') {
-  const result = compileCore(figmaData, requestedRootClass)
+export function compileUIKit(figmaData, requestedRootClass = '', options = {}) {
+  const result = compileCore(figmaData, requestedRootClass, options)
+  // Sinh SwiftUI trước bước hydrate preview vì hydrate ghi đè style/layout bằng dữ liệu CSS.
+  result.swiftUIFiles = generateSwiftUIFiles({ rootClass: result.rootClass, mainIR: result.previewRoot, componentIRs: result.componentIRs, deploymentTarget: result.deploymentTarget })
   const rawNodes = new Map()
   walkRaw(figmaData.root, node => rawNodes.set(node.id, node))
   const imageMap = figmaData.imageMap || {}
