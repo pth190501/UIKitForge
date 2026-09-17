@@ -25,7 +25,8 @@ const state = {
   showOutlines: false,
   showSafeArea: false,
   focusPreview: false,
-  inputMode: 'idle'
+  inputMode: 'idle',
+  outputTarget: 'uikit-xib'
 }
 
 const app = document.querySelector('#app')
@@ -77,6 +78,24 @@ app.innerHTML = `
       <div class="field root-class-field">
         <label for="rootClass">Root class</label>
         <input id="rootClass" type="text" value="GeneratedView" spellcheck="false" />
+      </div>
+      <div class="field output-target-field">
+        <label for="outputTarget">Output</label>
+        <select id="outputTarget">
+          <option value="uikit-xib">UIKit (XIB)</option>
+          <option value="uikit-code">UIKit (Code)</option>
+          <option value="swiftui">SwiftUI</option>
+        </select>
+      </div>
+      <div class="field deployment-target-field">
+        <label for="deploymentTarget">iOS target</label>
+        <select id="deploymentTarget">
+          <option value="13">iOS 13</option>
+          <option value="14">iOS 14</option>
+          <option value="15">iOS 15</option>
+          <option value="16">iOS 16</option>
+          <option value="17">iOS 17+</option>
+        </select>
       </div>
       <button class="button generate" id="generateButton"><span>Generate UIKit</span><b>⌘↵</b></button>
     </section>
@@ -142,7 +161,7 @@ app.innerHTML = `
 `
 
 const refs = Object.fromEntries([
-  'figmaUrl', 'rootClass', 'figmaToken', 'toggleToken', 'forgetToken', 'rememberToken', 'screenshotImage', 'screenshotDrop', 'screenshotName',
+  'figmaUrl', 'rootClass', 'outputTarget', 'deploymentTarget', 'figmaToken', 'toggleToken', 'forgetToken', 'rememberToken', 'screenshotImage', 'screenshotDrop', 'screenshotName',
   'generateButton', 'demoButton', 'downloadFileButton', 'downloadAllButton', 'statusText', 'statusMetrics', 'statusProgress',
   'statusStrip', 'workspace', 'fileCount', 'filesList', 'editorLanguage', 'editorFilename', 'codeEditor', 'editorFooter',
   'previewPanel', 'previewCanvas', 'previewTitle', 'previewSize', 'overlayRange', 'overlayValue', 'inspector', 'layersPanel',
@@ -156,6 +175,7 @@ updateInputMode()
 
 function wireEvents() {
   refs.generateButton.addEventListener('click', generateUIKit)
+  refs.outputTarget.addEventListener('change', () => { state.outputTarget = refs.outputTarget.value; if (state.compiled) { renderFileList(); selectFile(0) } })
   refs.demoButton.addEventListener('click', loadDemo)
   refs.figmaUrl.addEventListener('input', updateInputMode)
   refs.figmaToken.addEventListener('input', persistToken)
@@ -266,12 +286,14 @@ async function generateUIKit() {
       showProgress(0.58)
     }
 
-    const compiled = compileUIKit(figmaData, rootClass)
+    const deploymentTarget = Number(refs.deploymentTarget.value) || 13
+    const compiled = compileUIKit(figmaData, rootClass, { deploymentTarget })
     if (figmaData.analysisWarnings?.length) compiled.warnings.push(...figmaData.analysisWarnings)
     compiled.warnings = [...new Set(compiled.warnings)]
     compiled.assets = figmaData.assets || []
     compiled.imageAssetRefs = collectImageAssetRefs(compiled)
     if (figmaData.assetExportWarning) compiled.warnings.push(figmaData.assetExportWarning)
+    compiled.readme = generateReadme(compiled)
     state.figmaData = figmaData
     state.compiled = compiled
     state.selectedNodeId = null
@@ -304,38 +326,52 @@ function renderWorkspace() {
   renderFileList(); renderWarnings(); selectFile(0); refs.downloadAllButton.disabled = false
 }
 
+// Danh sách file hiển thị/tải theo output đang chọn — tránh trộn UIKit-XIB và UIKit-Code (cùng class name,
+// build chung sẽ trùng khai báo). Config (.swiftlint.yml/.swiftformat) và README luôn kèm theo mọi output.
+function visibleFiles() {
+  const compiled = state.compiled
+  if (!compiled) return []
+  const configFiles = compiled.files.filter(file => file.kind === 'config')
+  const readme = compiled.readme ? [{ path: 'README.md', name: 'README.md', language: 'markdown', content: compiled.readme, kind: 'config' }] : []
+  const generated = state.outputTarget === 'swiftui'
+    ? (compiled.swiftUIFiles || [])
+    : compiled.files.filter(file => file.target === state.outputTarget || file.target === 'uikit')
+  return [...generated, ...configFiles, ...readme]
+}
+
 function renderFileList() {
-  const files = state.compiled.files
+  const files = visibleFiles()
   refs.fileCount.textContent = String(files.length)
   refs.filesList.classList.remove('empty-state')
   refs.filesList.innerHTML = ''
   let previousGroup = ''
   files.forEach((file, index) => {
-    const group = file.kind === 'main' ? 'Main view' : 'Reusable components'
+    const group = file.kind === 'main' ? 'Main view' : file.kind === 'component' ? 'Reusable components' : 'Project config'
     if (group !== previousGroup) { const label = document.createElement('div'); label.className = 'file-group-label'; label.textContent = group; refs.filesList.appendChild(label); previousGroup = group }
     const button = document.createElement('button')
     button.className = 'file-row'; button.dataset.index = String(index)
-    button.innerHTML = `<span class="file-icon ${file.language}">${file.language === 'swift' ? 'S' : 'X'}</span><span class="file-meta"><strong>${escapeHtml(file.name)}</strong><small>${escapeHtml(file.path)}</small></span><span class="file-chevron">›</span>`
+    button.innerHTML = `<span class="file-icon ${file.language}">${file.language === 'swift' ? 'S' : file.language === 'xml' ? 'X' : 'M'}</span><span class="file-meta"><strong>${escapeHtml(file.name)}</strong><small>${escapeHtml(file.path)}</small></span><span class="file-chevron">›</span>`
     button.addEventListener('click', () => selectFile(index)); refs.filesList.appendChild(button)
   })
 }
 
 function selectFile(index) {
-  const file = state.compiled?.files?.[index]; if (!file) return
+  const file = visibleFiles()[index]; if (!file) return
   state.selectedFileIndex = index; state.selectedNodeId = null
   document.querySelectorAll('.file-row').forEach(row => row.classList.toggle('active', Number(row.dataset.index) === index))
-  refs.editorFilename.textContent = file.name; refs.editorLanguage.textContent = file.language === 'swift' ? 'SWIFT' : 'XIB XML'; refs.codeEditor.disabled = false; refs.codeEditor.value = file.content; refs.downloadFileButton.disabled = false
+  refs.editorFilename.textContent = file.name; refs.editorLanguage.textContent = file.language === 'swift' ? 'SWIFT' : file.language === 'xml' ? 'XIB XML' : file.language.toUpperCase(); refs.codeEditor.disabled = false; refs.codeEditor.value = file.content; refs.downloadFileButton.disabled = false
   updateEditorFooter(file)
   const root = currentPreviewRoot(); refs.previewTitle.textContent = previewDisplayName(file, root); state.selectedNodeId = root?.id || null
   renderPreview(); renderLayers(); if (root) renderInspector(root)
 }
 
-function currentFile() { return state.compiled?.files?.[state.selectedFileIndex] || null }
+function currentFile() { return visibleFiles()[state.selectedFileIndex] || null }
 function currentPreviewRoot() {
   if (!state.compiled) return null
   const file = currentFile()
   if (file?.kind === 'component') { const className = file.name.replace(/\.(swift|xib)$/i, ''); return state.compiled.componentPreviews?.[className] || state.compiled.previewRoot }
-  const mainSwift = state.compiled.files.find(item => item.kind === 'main' && item.language === 'swift')
+  if (state.outputTarget === 'swiftui') return state.compiled.previewRoot // cú pháp SwiftUI không khớp regex applySwiftPreview (viết cho UIKit)
+  const mainSwift = state.compiled.files.find(item => item.kind === 'main' && item.language === 'swift' && item.target === state.outputTarget)
   return mainSwift ? applySwiftPreview(state.compiled.previewRoot, mainSwift.content) : state.compiled.previewRoot
 }
 function previewDisplayName(file, root) { return file?.kind === 'component' ? file.name.replace(/\.(swift|xib)$/i, '') : state.compiled?.rootClass || root?.name || 'UIKit layout' }
@@ -396,7 +432,7 @@ function renderWarnings() {
 async function downloadAllFiles() {
   if (!state.compiled) return
   const zip = new JSZip()
-  for (const file of state.compiled.files) zip.file(file.path, file.content)
+  for (const file of visibleFiles()) zip.file(file.path, file.content)
   for (const asset of state.compiled.assets || []) addImageAsset(zip, asset)
   await addFigmaImageAssets(zip, state.compiled.imageAssetRefs || [], state.figmaData?.nodeImageExports)
   if (state.referenceImage) zip.file('References/source-screenshot.png', dataUrlPayload(state.referenceImage), { base64: true })
@@ -411,6 +447,53 @@ function addImageAsset(zip, asset) {
   const folder = `Assets.xcassets/${name}.imageset`
   zip.file(`${folder}/${filename}`, dataUrlPayload(asset.dataUrl), { base64: true })
   zip.file(`${folder}/Contents.json`, JSON.stringify({ images: [{ idiom: 'universal', filename, scale: '1x' }, { idiom: 'universal', scale: '2x' }, { idiom: 'universal', scale: '3x' }], info: { author: 'UIKitForge', version: 1 } }, null, 2))
+}
+
+function generateReadme(compiled) {
+  return `# ${compiled.rootClass}
+
+Generated by UIKitForge · deployment target: iOS ${compiled.deploymentTarget}+
+
+## Output layout
+
+- \`${compiled.rootClass}/\` — main screen: XIB view + Swift outlets (UIKit-XIB), plus the MVVM-R
+  \`${compiled.rootClass.replace(/View$/, '') || compiled.rootClass}ViewController/ViewModel/Router\` files,
+  shared by both UIKit variants.
+- \`UIKit-Code/\` — the same screen built entirely in code (NSLayoutConstraint, no XIB). Ship this
+  folder instead of the XIB pair above — do not include both, they declare the same class names.
+- \`SwiftUI/\` — an independent SwiftUI MVVM-R rewrite of the same layout.
+- \`Components/\` / \`UIKit-Code/Components/\` / \`SwiftUI/Components/\` — reusable Figma component
+  instances, one pair per component.
+- \`Assets.xcassets/\` — image fills exported from Figma at @2x/@3x.
+- \`.swiftlint.yml\` / \`.swiftformat\` — lint config matching the style this compiler emits.
+
+## Figma naming conventions this compiler relies on
+
+- **Layer name → Swift identifier.** Every layer name is sanitized into a camelCase outlet
+  (\`@IBOutlet\`, \`UIImageView\`, \`Image(...)\`, SwiftUI section name). Keep layer names short,
+  readable and unique within a screen — two layers with names that collide after sanitizing get a
+  numeric suffix (\`title2\`), which is easy to lose track of.
+- **Component instances → reusable views.** A Figma component instance compiles to its own
+  \`<Name>View\` class (UIKit) / \`<Name>View\` struct (SwiftUI), reused everywhere it appears.
+  Name components the way you'd name a Swift type. This also works for a nested instance inside
+  another instance/screen — each distinct component becomes its own reusable class wherever it appears.
+- **Image fills → image assets.** A layer with an image fill and no children compiles to a
+  \`UIImageView\`/\`Image\`, and its layer name becomes the asset name in \`Assets.xcassets\`
+  (\`UIImage(named: "<outlet>")\`). Keep those layer names asset-catalog-friendly.
+- **Auto Layout → UIStackView / NSLayoutConstraint.** Frames with Figma Auto Layout compile to a
+  \`UIStackView\` with matching axis/spacing/alignment/distribution. Frames without Auto Layout fall
+  back to inferred pin constraints from each layer's Figma constraints (LEFT/RIGHT/CENTER/SCALE);
+  set those explicitly in Figma for predictable results.
+  Note: Figma's "wrap" Auto Layout has no UIStackView equivalent — wrapped content still compiles
+  to a single line (see compiler warnings).
+  Vector layers (VECTOR/BOOLEAN_OPERATION) are not exported as image assets yet — they compile to a
+  plain UIView placeholder.
+- **Text auto-resize → numberOfLines.** "Auto height" / "Auto width & height" text layers compile
+  with \`numberOfLines = 0\`; fixed-size text layers get \`numberOfLines = 1\`.
+- **Font family.** A non-default font family on a text layer is honored via
+  \`UIFont(name:)\`/\`Font.custom(...)\` with a system-font fallback if that font isn't bundled in
+  the target app — add the font file and an Info.plist entry yourself.
+`
 }
 
 // Node có kind:'image' trong IR (main + component) — outlet của chúng là tên asset mà cả UIKit
