@@ -52,7 +52,7 @@ jobs:
         run: |
           set -e
           for dir in ci-artifacts/*-ios13; do
-            for kind in uikit swiftui; do
+            for kind in uikit-xib uikit-code swiftui; do
               files=$(find "$dir/$kind" -name '*.swift')
               [ -z "$files" ] && continue
               echo "Typechecking $dir/$kind (iOS 13)"
@@ -60,7 +60,7 @@ jobs:
             done
           done
           for dir in ci-artifacts/*-ios17; do
-            for kind in uikit swiftui; do
+            for kind in uikit-xib uikit-code swiftui; do
               files=$(find "$dir/$kind" -name '*.swift')
               [ -z "$files" ] && continue
               echo "Typechecking $dir/$kind (iOS 17)"

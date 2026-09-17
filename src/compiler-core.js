@@ -32,8 +32,9 @@ export function compileUIKit(figmaData, requestedRootClass = '', options = {}) {
     dedupeOutlets(ir)
     ensureUniqueIds(ir)
     files.push(
-      { path: `Components/${entry.className}/${entry.className}.swift`, name: `${entry.className}.swift`, language: 'swift', content: generateSwift(entry.className, ir), kind: 'component' },
-      { path: `Components/${entry.className}/${entry.className}.xib`, name: `${entry.className}.xib`, language: 'xml', content: generateXib(entry.className, ir, deploymentTarget), kind: 'component' }
+      { path: `Components/${entry.className}/${entry.className}.swift`, name: `${entry.className}.swift`, language: 'swift', content: generateSwift(entry.className, ir), kind: 'component', target: 'uikit-xib' },
+      { path: `Components/${entry.className}/${entry.className}.xib`, name: `${entry.className}.xib`, language: 'xml', content: generateXib(entry.className, ir, deploymentTarget), kind: 'component', target: 'uikit-xib' },
+      { path: `UIKit-Code/Components/${entry.className}/${entry.className}.swift`, name: `${entry.className}.swift`, language: 'swift', content: generateSwiftProgrammatic(entry.className, ir), kind: 'component', target: 'uikit-code' }
     )
     components.push({ componentId, className: entry.className, sourceName: entry.source.name || 'Component' })
     componentIRs.push({ className: entry.className, ir })
@@ -43,8 +44,9 @@ export function compileUIKit(figmaData, requestedRootClass = '', options = {}) {
   dedupeOutlets(mainIR)
   ensureUniqueIds(mainIR)
   files.unshift(
-    { path: `${rootClass}/${rootClass}.xib`, name: `${rootClass}.xib`, language: 'xml', content: generateXib(rootClass, mainIR, deploymentTarget), kind: 'main' },
-    { path: `${rootClass}/${rootClass}.swift`, name: `${rootClass}.swift`, language: 'swift', content: generateSwift(rootClass, mainIR), kind: 'main' }
+    { path: `${rootClass}/${rootClass}.xib`, name: `${rootClass}.xib`, language: 'xml', content: generateXib(rootClass, mainIR, deploymentTarget), kind: 'main', target: 'uikit-xib' },
+    { path: `${rootClass}/${rootClass}.swift`, name: `${rootClass}.swift`, language: 'swift', content: generateSwift(rootClass, mainIR), kind: 'main', target: 'uikit-xib' },
+    { path: `UIKit-Code/${rootClass}/${rootClass}.swift`, name: `${rootClass}.swift`, language: 'swift', content: generateSwiftProgrammatic(rootClass, mainIR), kind: 'main', target: 'uikit-code' }
   )
 
   warnings.push(...collectLayoutWarnings(mainIR))
@@ -358,40 +360,175 @@ function inferVertical(frame, parentHeight, bottom) {
 function generateSwift(className, root) {
   const descendants = flatten(root).slice(1)
   const outletLines = descendants.map(node => `    @IBOutlet private weak var ${node.outlet}: ${swiftType(node)}!`).join('\n')
-  const styleLines = generateSwiftStyleLines(root)
+  // ponytail: không bỏ background/text/textColor/numberOfLines dù XIB đã có — Web Preview's live-edit
+  // (src/preview.js applySwiftPreview) parse các dòng này trực tiếp từ Swift, xoá đi sẽ hỏng tính năng.
+  const styleLines = generateSwiftStyleLines(root, { includeStatic: true, rootRef: 'contentView' })
   return `import UIKit\n\nfinal class ${className}: UIView {\n    @IBOutlet private var contentView: UIView!${outletLines ? `\n${outletLines}` : ''}\n\n    override init(frame: CGRect) {\n        super.init(frame: frame)\n        commonInit()\n    }\n\n    required init?(coder: NSCoder) {\n        super.init(coder: coder)\n        commonInit()\n    }\n\n    private func commonInit() {\n        Bundle(for: Self.self).loadNibNamed(String(describing: Self.self), owner: self, options: nil)\n        guard let contentView else { return }\n        addSubview(contentView)\n        contentView.translatesAutoresizingMaskIntoConstraints = false\n        NSLayoutConstraint.activate([\n            contentView.leadingAnchor.constraint(equalTo: leadingAnchor),\n            contentView.trailingAnchor.constraint(equalTo: trailingAnchor),\n            contentView.topAnchor.constraint(equalTo: topAnchor),\n            contentView.bottomAnchor.constraint(equalTo: bottomAnchor)\n        ])\n        applyGeneratedStyle()\n    }\n\n    /// UIKitForge watches common UIKit assignments in this method and mirrors them in Web Preview.\n    /// Native validation remains the final source of truth once the macOS agent is connected.\n    private func applyGeneratedStyle() {\n${styleLines || '        // No runtime-only styles were required for this node.'}\n    }\n}\n`
 }
 
-function generateSwiftStyleLines(root) {
+// includeStatic: bật khi không có XIB đi kèm (biến thể programmatic) — lúc đó Swift là nguồn duy nhất cho
+// background/text/textColor/numberOfLines/textAlignment/contentMode; XIB variant giữ false để tránh set trùng.
+function generateSwiftStyleLines(root, { includeStatic = false, rootRef = 'contentView' } = {}) {
   const lines = []
   for (const [index, node] of flatten(root).entries()) {
-    const target = index === 0 ? 'contentView' : node.outlet
+    const targetRef = index === 0 ? rootRef : node.outlet
+    const target = targetRef === 'self' ? '' : `${targetRef}.` // self ngầm định — tránh redundantSelf của SwiftFormat
     const style = node.style || {}
-    if (style.background) lines.push(`        ${target}.backgroundColor = ${rgbaToSwift(style.background)}`)
+    if (includeStatic && style.background) lines.push(`        ${target}backgroundColor = ${rgbaToSwift(style.background)}`)
     if (style.radius > 0) {
-      lines.push(`        ${target}.layer.cornerRadius = ${formatNumber(style.radius)}`)
-      lines.push(`        ${target}.layer.masksToBounds = true`)
+      lines.push(`        ${target}layer.cornerRadius = ${formatNumber(style.radius)}`)
+      lines.push(`        ${target}layer.masksToBounds = true`)
     }
     if (style.borderColor && style.borderWidth > 0) {
-      lines.push(`        ${target}.layer.borderColor = ${rgbaToSwift(style.borderColor)}.cgColor`)
-      lines.push(`        ${target}.layer.borderWidth = ${formatNumber(style.borderWidth)}`)
+      lines.push(`        ${target}layer.borderColor = ${rgbaToSwift(style.borderColor)}.cgColor`)
+      lines.push(`        ${target}layer.borderWidth = ${formatNumber(style.borderWidth)}`)
     }
-    if (style.opacity < 1) lines.push(`        ${target}.alpha = ${formatNumber(style.opacity)}`)
+    if (style.opacity < 1) lines.push(`        ${target}alpha = ${formatNumber(style.opacity)}`)
     if (node.kind === 'label') {
-      lines.push(`        ${target}.text = ${swiftString(node.text)}`)
-      if (style.textColor) lines.push(`        ${target}.textColor = ${rgbaToSwift(style.textColor)}`)
-      lines.push(`        ${target}.font = .systemFont(ofSize: ${formatNumber(style.fontSize)}, weight: .${swiftFontWeight(style.fontWeight)})`)
-      lines.push(`        ${target}.numberOfLines = ${style.numberOfLines}`)
+      if (includeStatic) {
+        lines.push(`        ${target}text = ${swiftString(node.text)}`)
+        if (style.textColor) lines.push(`        ${target}textColor = ${rgbaToSwift(style.textColor)}`)
+        lines.push(`        ${target}numberOfLines = ${style.numberOfLines}`)
+        if (style.textAlign !== 'left') lines.push(`        ${target}textAlignment = .${swiftTextAlignment(style.textAlign)}`)
+      }
+      lines.push(`        ${target}font = ${swiftFontExpression(style)}`)
     }
+    if (node.kind === 'image' && includeStatic) lines.push(`        ${target}contentMode = .scaleAspectFit`)
     if (style.shadow) {
-      lines.push(`        ${target}.layer.shadowColor = ${rgbaToSwift(style.shadow.color || 'rgba(0, 0, 0, 0.2)')}.cgColor`)
-      lines.push(`        ${target}.layer.shadowOpacity = ${formatNumber(alphaFromRgba(style.shadow.color || 'rgba(0,0,0,0.2)'))}`)
-      lines.push(`        ${target}.layer.shadowOffset = CGSize(width: ${formatNumber(style.shadow.x)}, height: ${formatNumber(style.shadow.y)})`)
-      lines.push(`        ${target}.layer.shadowRadius = ${formatNumber(style.shadow.blur / 2)}`)
-      lines.push(`        ${target}.layer.masksToBounds = false`)
+      lines.push(`        ${target}layer.shadowColor = ${rgbaToSwift(style.shadow.color || 'rgba(0, 0, 0, 0.2)')}.cgColor`)
+      lines.push(`        ${target}layer.shadowOpacity = ${formatNumber(alphaFromRgba(style.shadow.color || 'rgba(0,0,0,0.2)'))}`)
+      lines.push(`        ${target}layer.shadowOffset = CGSize(width: ${formatNumber(style.shadow.x)}, height: ${formatNumber(style.shadow.y)})`)
+      lines.push(`        ${target}layer.shadowRadius = ${formatNumber(style.shadow.blur / 2)}`)
+      lines.push(`        ${target}layer.masksToBounds = false`)
     }
   }
   return lines.join('\n')
+}
+
+function swiftFontExpression(style) {
+  const weight = swiftFontWeight(style.fontWeight)
+  if (style.fontFamily && style.fontFamily !== 'System') {
+    return `UIFont(name: ${swiftString(style.fontFamily)}, size: ${formatNumber(style.fontSize)}) ?? .systemFont(ofSize: ${formatNumber(style.fontSize)}, weight: .${weight})`
+  }
+  return `.systemFont(ofSize: ${formatNumber(style.fontSize)}, weight: .${weight})`
+}
+
+function swiftTextAlignment(value) { if (value === 'center') return 'center'; if (value === 'right') return 'right'; if (value === 'justified') return 'justified'; return 'natural' }
+
+// Sinh view hoàn toàn bằng code (không XIB): cùng IR, cùng constraint format với generateXib,
+// chỉ đổi cách emit sang NSLayoutConstraint anchor. Dùng khi user chọn output UIKit-Code.
+export function generateSwiftProgrammatic(className, root) {
+  const descendants = flatten(root).slice(1)
+  const refs = new Map([[root.id, 'self']])
+  const figmaRefs = new Map([[root.figmaId, 'self']])
+  const propertyLines = []
+  if (root.stack) { refs.set(root.stack.id, 'rootStack'); propertyLines.push('    private let rootStack = UIStackView()') }
+  for (const node of descendants) {
+    refs.set(node.id, node.outlet)
+    figmaRefs.set(node.figmaId, node.outlet)
+    propertyLines.push(`    private let ${node.outlet} = ${swiftType(node)}()`)
+    if (node.stack) {
+      const stackRef = `${node.outlet}Stack`
+      refs.set(node.stack.id, stackRef)
+      propertyLines.push(`    private let ${stackRef} = UIStackView()`)
+    }
+  }
+  // Tách building của từng con trực tiếp của root thành method riêng để commonInit() không vượt
+  // SwiftLint function_body_length; tầng lồng sâu hơn vẫn build đệ quy trong method của con đó.
+  // ponytail: chỉ tách 1 cấp — một nhánh con cực sâu/rộng vẫn có thể vượt 50 dòng, tách thêm khi gặp trường hợp đó.
+  const initLines = []
+  const methods = []
+  const pinned = root.stack ? root.children.filter(child => !child.arranged) : root.children
+  if (root.stack) {
+    const stackRef = refs.get(root.stack.id)
+    const arranged = root.children.filter(child => child.arranged)
+    initLines.push(...swiftStackSetupLines(root.stack, stackRef))
+    for (const child of arranged) initLines.push(`        ${stackRef}.addArrangedSubview(${refs.get(child.id)})`)
+    for (const child of arranged) initLines.push(...swiftConstraintLines(stackRef, refs.get(child.id), child.constraints, refs, figmaRefs))
+    for (const child of arranged) pushProgrammaticChildMethod(child, refs.get(child.id), refs, figmaRefs, methods, initLines)
+    initLines.push(`        addSubview(${stackRef})`)
+    initLines.push(`        ${stackRef}.translatesAutoresizingMaskIntoConstraints = false`)
+    initLines.push(...swiftConstraintLines('self', stackRef, root.stack.pins, refs, figmaRefs))
+  }
+  for (const child of pinned) initLines.push(`        addSubview(${refs.get(child.id)})`)
+  for (const child of pinned) initLines.push(`        ${refs.get(child.id)}.translatesAutoresizingMaskIntoConstraints = false`)
+  for (const child of pinned) initLines.push(...swiftConstraintLines('self', refs.get(child.id), child.constraints, refs, figmaRefs))
+  for (const child of pinned) pushProgrammaticChildMethod(child, refs.get(child.id), refs, figmaRefs, methods, initLines)
+
+  const styleLines = generateSwiftStyleLines(root, { includeStatic: true, rootRef: 'self' })
+  const methodBlocks = methods.map(m => `\n    private func ${m.name}() {\n${m.lines.join('\n')}\n    }\n`).join('')
+  return `import UIKit\n\nfinal class ${className}: UIView {\n${propertyLines.join('\n')}\n\n    override init(frame: CGRect) {\n        super.init(frame: frame)\n        commonInit()\n    }\n\n    required init?(coder: NSCoder) {\n        super.init(coder: coder)\n        commonInit()\n    }\n\n    private func commonInit() {\n${initLines.join('\n')}\n        applyGeneratedStyle()\n    }\n${methodBlocks}\n    private func applyGeneratedStyle() {\n${styleLines || '        // No runtime-only styles were required for this node.'}\n    }\n}\n`
+}
+
+function pushProgrammaticChildMethod(child, childRef, refs, figmaRefs, methods, callerLines) {
+  if (!child.children || !child.children.length) return
+  const methodLines = []
+  emitProgrammaticContainer(child, childRef, refs, figmaRefs, methodLines)
+  if (!methodLines.length) return
+  const name = `configure${child.outlet.charAt(0).toUpperCase()}${child.outlet.slice(1)}`
+  methods.push({ name, lines: methodLines })
+  callerLines.push(`        ${name}()`)
+}
+
+// Hai lượt (thêm subview rồi mới activate constraint) để constraint chéo-anh-em trong cùng stack
+// luôn thấy view kia đã có ancestor chung trước khi kích hoạt.
+function emitProgrammaticContainer(node, parentRef, refs, figmaRefs, lines) {
+  const pinned = node.stack ? node.children.filter(child => !child.arranged) : node.children
+  if (node.stack) {
+    const stackRef = refs.get(node.stack.id)
+    const arranged = node.children.filter(child => child.arranged)
+    lines.push(...swiftStackSetupLines(node.stack, stackRef))
+    for (const child of arranged) lines.push(`        ${stackRef}.addArrangedSubview(${refs.get(child.id)})`)
+    for (const child of arranged) lines.push(...swiftConstraintLines(stackRef, refs.get(child.id), child.constraints, refs, figmaRefs))
+    for (const child of arranged) emitProgrammaticContainer(child, refs.get(child.id), refs, figmaRefs, lines)
+    lines.push(`        ${parentRef}.addSubview(${stackRef})`)
+    lines.push(`        ${stackRef}.translatesAutoresizingMaskIntoConstraints = false`)
+    lines.push(...swiftConstraintLines(parentRef, stackRef, node.stack.pins, refs, figmaRefs))
+  }
+  for (const child of pinned) lines.push(`        ${parentRef}.addSubview(${refs.get(child.id)})`)
+  for (const child of pinned) lines.push(`        ${refs.get(child.id)}.translatesAutoresizingMaskIntoConstraints = false`)
+  for (const child of pinned) lines.push(...swiftConstraintLines(parentRef, refs.get(child.id), child.constraints, refs, figmaRefs))
+  for (const child of pinned) emitProgrammaticContainer(child, refs.get(child.id), refs, figmaRefs, lines)
+}
+
+function swiftStackSetupLines(stack, ref) {
+  const lines = []
+  if (stack.axis === 'vertical') lines.push(`        ${ref}.axis = .vertical`)
+  if (stack.distribution === 'equalSpacing') lines.push(`        ${ref}.distribution = .equalSpacing`)
+  if (stack.alignment !== 'fill') {
+    const alignment = { top: '.top', center: '.center', bottom: '.bottom', firstBaseline: '.firstBaseline', leading: '.leading', trailing: '.trailing' }[stack.alignment] || '.fill'
+    lines.push(`        ${ref}.alignment = ${alignment}`)
+  }
+  if (stack.spacing) lines.push(`        ${ref}.spacing = ${formatNumber(stack.spacing)}`)
+  return lines
+}
+
+// Cùng quy ước dấu/first-second với constraintXml (xem comment tại đó) để hai output khớp nhau tuyệt đối.
+function swiftConstraintLines(parentRef, childRef, constraints, refs, figmaRefs) {
+  return (constraints || []).flatMap(constraint => swiftConstraintLine(parentRef, childRef, constraint, refs, figmaRefs)).filter(Boolean)
+}
+
+const SWIFT_ANCHOR = { leading: 'leadingAnchor', trailing: 'trailingAnchor', top: 'topAnchor', bottom: 'bottomAnchor', centerX: 'centerXAnchor', centerY: 'centerYAnchor' }
+
+// Không viết "self." thừa (SwiftFormat mặc định loại bỏ) — self chỉ ngầm định khi ref là view hiện tại.
+function swiftAnchor(ref, anchor) { return ref === 'self' ? anchor : `${ref}.${anchor}` }
+
+function swiftConstraintLine(parentRef, childRef, constraint, refs, figmaRefs) {
+  const { type, constant, atLeast, target, targetFigmaId } = constraint
+  const relation = atLeast ? 'greaterThanOrEqualTo' : 'equalTo'
+  if (type === 'width' || type === 'height') {
+    const anchor = `${type}Anchor`
+    if (target === 'stack') return [`        ${swiftAnchor(childRef, anchor)}.constraint(${relation}: ${swiftAnchor(parentRef, anchor)}).isActive = true`]
+    if (targetFigmaId) {
+      const otherRef = figmaRefs.get(targetFigmaId)
+      return otherRef ? [`        ${swiftAnchor(childRef, anchor)}.constraint(${relation}: ${swiftAnchor(otherRef, anchor)}).isActive = true`] : []
+    }
+    return [`        ${swiftAnchor(childRef, anchor)}.constraint(equalToConstant: ${formatNumber(constant)}).isActive = true`]
+  }
+  const anchor = SWIFT_ANCHOR[type]
+  const [firstRef, secondRef] = type === 'trailing' || type === 'bottom' ? [parentRef, childRef] : [childRef, parentRef]
+  const constantPart = constant ? `, constant: ${formatNumber(constant)}` : ''
+  return [`        ${swiftAnchor(firstRef, anchor)}.constraint(${relation}: ${swiftAnchor(secondRef, anchor)}${constantPart}).isActive = true`]
 }
 
 function generateXib(className, root, deploymentTarget = MIN_DEPLOYMENT_TARGET) {

@@ -111,7 +111,12 @@ function labelLines(node, ctx) {
     ctx.texts.push({ property, value: node.text })
     textExpression = `viewModel.${property}`
   }
-  const lines = [`Text(${textExpression})`, `.font(.system(size: ${formatNumber(style.fontSize)}, weight: .${swiftFontWeight(style.fontWeight)}))`]
+  const lines = [`Text(${textExpression})`]
+  if (style.fontFamily && style.fontFamily !== 'System') {
+    lines.push(`.font(.custom(${swiftString(style.fontFamily)}, size: ${formatNumber(style.fontSize)}))`, `.fontWeight(.${swiftFontWeight(style.fontWeight)})`)
+  } else {
+    lines.push(`.font(.system(size: ${formatNumber(style.fontSize)}, weight: .${swiftFontWeight(style.fontWeight)}))`)
+  }
   if (style.textColor) lines.push(`${ctx.api.foregroundStyle ? '.foregroundStyle' : '.foregroundColor'}(${color(style.textColor)})`)
   if (style.textAlign === 'center' || style.textAlign === 'right') lines.push(`.multilineTextAlignment(${style.textAlign === 'center' ? '.center' : '.trailing'})`)
   if (style.numberOfLines === 1) lines.push('.lineLimit(1)')
