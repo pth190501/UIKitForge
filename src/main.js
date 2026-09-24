@@ -479,9 +479,40 @@ async function downloadAllFiles() {
   for (const file of visibleFiles()) zip.file(file.path, file.content)
   for (const asset of state.compiled.assets || []) addImageAsset(zip, asset)
   await addFigmaImageAssets(zip, state.compiled.imageAssetRefs || [], state.figmaData?.nodeImageExports)
+  addColorAssets(zip, state.compiled.colors || [])
   if (state.referenceImage) zip.file('References/source-screenshot.png', dataUrlPayload(state.referenceImage), { base64: true })
   zip.file('UIKitForge.generated.json', JSON.stringify({ rootClass: state.compiled.rootClass, components: state.compiled.components, warnings: state.compiled.warnings, source: state.figmaData?.source || null, assets: (state.compiled.assets || []).map(({ dataUrl, ...meta }) => meta) }, null, 2))
   const blob = await zip.generateAsync({ type: 'blob' }); downloadBlob(blob, `${state.compiled.rootClass}-UIKitForge.zip`)
+}
+
+// Colors.xcassets: mỗi màu UIColor(named:)/Color(named:) trong code trỏ tới 1 color set ở đây.
+// Dark Appearance mặc định giống Any Appearance (Figma chỉ có 1 bản thiết kế) — xem cảnh báo compiler
+// nhắc user tự chỉnh trong Xcode. Vẫn hơn hardcode literal vì đổi 1 chỗ là đổi cả app.
+function addColorAssets(zip, colors) {
+  if (!colors.length) return
+  zip.file('Colors.xcassets/Contents.json', JSON.stringify({ info: { author: 'UIKitForge', version: 1 } }, null, 2))
+  for (const entry of colors) addColorAsset(zip, entry)
+}
+
+function addColorAsset(zip, entry) {
+  const c = parseRgbaForXcode(entry.rgba)
+  const colorComponent = (appearance) => ({
+    idiom: 'universal',
+    ...(appearance ? { appearances: [{ appearance: 'luminosity', value: appearance }] } : {}),
+    color: { 'color-space': 'srgb', components: { red: c.hex.r, green: c.hex.g, blue: c.hex.b, alpha: c.alpha } }
+  })
+  const contents = { colors: [colorComponent(null), colorComponent('dark')], info: { author: 'UIKitForge', version: 1 } }
+  zip.file(`Colors.xcassets/${entry.name}.colorset/Contents.json`, JSON.stringify(contents, null, 2))
+}
+
+function parseRgbaForXcode(rgba) {
+  const match = String(rgba || '').match(/rgba?\(\s*([\d.]+)\s*,\s*([\d.]+)\s*,\s*([\d.]+)(?:\s*,\s*([\d.]+))?\s*\)/i)
+  const toHex = value => `0x${Math.max(0, Math.min(255, Math.round(Number(value) || 0))).toString(16).toUpperCase().padStart(2, '0')}`
+  if (!match) return { hex: { r: '0x00', g: '0x00', b: '0x00' }, alpha: '1.000' }
+  return {
+    hex: { r: toHex(match[1]), g: toHex(match[2]), b: toHex(match[3]) },
+    alpha: (match[4] == null ? 1 : Number(match[4])).toFixed(3)
+  }
 }
 
 function addImageAsset(zip, asset) {

@@ -43,7 +43,7 @@ const component = card['PackageCardView.swift']
 assert.match(component, /Text\("Fast \\"Data\\""\)/)
 assert.match(component, /\.frame\(width: 40, height: 40\)\n {16}\.opacity\(0\.5\)/, 'size modifiers precede style modifiers')
 assert.ok(component.indexOf('.frame(maxWidth: .infinity, alignment: .topLeading)') < component.indexOf('.background('), 'container frame precedes background')
-assert.match(component, /\.stroke\(Color\(red: 0\.8, green: 0\.8, blue: 0\.8, opacity: 1\), lineWidth: 1\)/)
+assert.match(component, /\.stroke\(Color\("packageCardBorder"\), lineWidth: 1\)/)
 
 // Cấu trúc hợp lệ: ngoặc cân bằng, không dòng quá 120 ký tự, kết thúc bằng một newline
 for (const [name, content] of Object.entries({ ...ios13, ...ios17, ...card })) {

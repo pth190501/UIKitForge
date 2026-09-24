@@ -6,7 +6,7 @@
   "scripts": {
     "dev": "vite",
     "build": "vite build",
-    "test": "node tests/autolayout.test.mjs && node tests/swiftui.test.mjs && node tests/uikit-programmatic.test.mjs && node tests/component-live-preview.test.mjs && node tests/preview-richness.test.mjs && node tests/screenshot-analysis.test.mjs && node tests/pixel-diff.test.mjs && node tests/accessibility.test.mjs",
+    "test": "node tests/autolayout.test.mjs && node tests/swiftui.test.mjs && node tests/uikit-programmatic.test.mjs && node tests/component-live-preview.test.mjs && node tests/preview-richness.test.mjs && node tests/screenshot-analysis.test.mjs && node tests/pixel-diff.test.mjs && node tests/accessibility.test.mjs && node tests/color-registry.test.mjs",
     "preview": "vite preview"
   },
   "dependencies": {

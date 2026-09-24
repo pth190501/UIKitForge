@@ -8,7 +8,7 @@ import { LINT_CONFIG_FILES } from './lint-config.js'
 export function compileUIKit(figmaData, requestedRootClass = '', options = {}) {
   const result = compileCore(figmaData, requestedRootClass, options)
   // Sinh SwiftUI trước bước hydrate preview vì hydrate ghi đè style/layout bằng dữ liệu CSS.
-  result.swiftUIFiles = generateSwiftUIFiles({ rootClass: result.rootClass, mainIR: result.previewRoot, componentIRs: result.componentIRs, deploymentTarget: result.deploymentTarget })
+  result.swiftUIFiles = generateSwiftUIFiles({ rootClass: result.rootClass, mainIR: result.previewRoot, componentIRs: result.componentIRs, deploymentTarget: result.deploymentTarget, colorRegistry: result.colorRegistry })
   result.files.push(...generateUIKitMVVMFiles({ rootClass: result.rootClass }), ...LINT_CONFIG_FILES)
   const rawNodes = new Map()
   walkRaw(figmaData.root, node => rawNodes.set(node.id, node))
