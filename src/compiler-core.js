@@ -392,11 +392,19 @@ function generateSwiftStyleLines(root, { includeStatic = false, rootRef = 'conte
         if (style.textAlign !== 'left') lines.push(`        ${target}textAlignment = .${swiftTextAlignment(style.textAlign)}`)
       }
       lines.push(`        ${target}font = ${swiftFontExpression(style)}`)
+      // adjustsFontForContentSizeCategory: UIFont.systemFont không tự scale theo Dynamic Type như SwiftUI's
+      // .system(size:) — phải bật cờ này + UIFontMetrics ở trên thì UILabel mới tôn trọng cỡ chữ hệ thống.
+      lines.push(`        ${target}adjustsFontForContentSizeCategory = true`)
     }
     if (node.kind === 'image' && includeStatic) {
       lines.push(`        ${target}contentMode = .scaleAspectFit`)
       // Tên asset = outlet, khớp với Image(...) bên SwiftUI — xem generateUIKitAssets ở figma.js/main.js.
       lines.push(`        ${target}image = UIImage(named: ${swiftString(node.outlet)})`)
+      // VoiceOver: layer Figma không phân biệt ảnh trang trí và ảnh nội dung, nên coi mọi UIImageView là
+      // nội dung có nghĩa và gán accessibilityLabel từ tên layer; tên vô nghĩa (Rectangle 12, Frame 3...)
+      // vẫn còn hơn im lặng hoàn toàn với VoiceOver.
+      lines.push(`        ${target}isAccessibilityElement = true`)
+      lines.push(`        ${target}accessibilityLabel = ${swiftString(humanizeLayerName(node.name))}`)
     }
     if (style.shadow) {
       lines.push(`        ${target}layer.shadowColor = ${rgbaToSwift(style.shadow.color || 'rgba(0, 0, 0, 0.2)')}.cgColor`)
@@ -411,10 +419,41 @@ function generateSwiftStyleLines(root, { includeStatic = false, rootRef = 'conte
 
 function swiftFontExpression(style) {
   const weight = swiftFontWeight(style.fontWeight)
-  if (style.fontFamily && style.fontFamily !== 'System') {
-    return `UIFont(name: ${swiftString(style.fontFamily)}, size: ${formatNumber(style.fontSize)}) ?? .systemFont(ofSize: ${formatNumber(style.fontSize)}, weight: .${weight})`
+  const base = style.fontFamily && style.fontFamily !== 'System'
+    ? `UIFont(name: ${swiftString(style.fontFamily)}, size: ${formatNumber(style.fontSize)}) ?? .systemFont(ofSize: ${formatNumber(style.fontSize)}, weight: .${weight})`
+    : `UIFont.systemFont(ofSize: ${formatNumber(style.fontSize)}, weight: .${weight})`
+  // UIFontMetrics giữ đúng size Figma ở cỡ chữ mặc định nhưng vẫn scale theo Dynamic Type,
+  // thay vì .systemFont cố định — xem ghi chú adjustsFontForContentSizeCategory ở nơi gọi.
+  return `UIFontMetrics(forTextStyle: .${nearestTextStyle(style.fontSize, style.fontWeight)}).scaledFont(for: ${base})`
+}
+
+// Khớp fontSize Figma với UIFont.TextStyle gần nhất để UIFontMetrics scale đúng đường cong Dynamic Type của Apple.
+function nearestTextStyle(fontSize, fontWeight) {
+  const sizes = [
+    ['largeTitle', 34], ['title1', 28], ['title2', 22], ['title3', 20],
+    ['body', 17], ['callout', 16], ['subheadline', 15],
+    ['footnote', 13], ['caption1', 12], ['caption2', 11]
+  ]
+  let best = sizes[sizes.length - 1]
+  let bestDiff = Infinity
+  for (const entry of sizes) {
+    const diff = Math.abs(entry[1] - (fontSize || 14))
+    if (diff < bestDiff) { bestDiff = diff; best = entry }
   }
-  return `.systemFont(ofSize: ${formatNumber(style.fontSize)}, weight: .${weight})`
+  if (best[0] === 'body' && (fontWeight || 400) >= 600) return 'headline'
+  return best[0]
+}
+
+// Tên layer Figma ("Rectangle 12", "hero_image") không phải câu văn đọc được — tách theo case/dấu gạch
+// dưới thành từ rồi viết hoa chữ đầu để VoiceOver đọc tự nhiên hơn một chút so với đọc nguyên tên kỹ thuật.
+function humanizeLayerName(value) {
+  const words = String(value || 'Image')
+    .replace(/([a-z0-9])([A-Z])/g, '$1 $2')
+    .replace(/[_-]+/g, ' ')
+    .trim()
+    .split(/\s+/)
+    .filter(Boolean)
+  return words.map(word => word.charAt(0).toUpperCase() + word.slice(1)).join(' ') || 'Image'
 }
 
 function swiftTextAlignment(value) { if (value === 'center') return 'center'; if (value === 'right') return 'right'; if (value === 'justified') return 'justified'; return 'natural' }
