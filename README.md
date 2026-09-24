@@ -31,9 +31,20 @@ UIKitForge is an experimental web IDE that reads a Figma node using a user-provi
   - label `font`
   - label `numberOfLines`
 - Optional uploaded reference image overlay.
+- Quantitative pixel-diff match % between the rasterized preview and the reference image (see [Pixel-diff comparison](#pixel-diff-comparison)).
 - Click any preview node to inspect frame, style and inferred constraints.
-- Download the selected file or export all generated source as a ZIP.
+- Download the selected file or export all generated source as a ZIP, including a generated `Colors.xcassets`.
 - Built-in demo so the editor/preview can be tested without a Figma token.
+- Generated UIKit labels use `UIFontMetrics` + `adjustsFontForContentSizeCategory` for Dynamic Type, and generated `UIImageView`s get a VoiceOver `accessibilityLabel`.
+- Colors are centralized as named `Colors.xcassets` entries shared by UIKit and SwiftUI output, ready for a real Dark Mode palette (see [Dark Mode colors](#dark-mode-colors)).
+
+## Pixel-diff comparison
+
+When a reference image is uploaded, UIKitForge rasterizes the compiled preview tree onto an offscreen canvas and diffs it pixel-by-pixel against the reference (`src/pixel-diff.js`), showing a `XX% match` badge next to the overlay slider. This is a layout/color approximation, not a real UIKit/Xcode render — gradients and font rendering are not raster-accurate yet. The diff algorithm itself is regression-tested on every CI run (`tests/pixel-diff.test.mjs`, gated as its own CI step).
+
+## Dark Mode colors
+
+Every color UIKitForge generates (`backgroundColor`, `textColor`, borders, shadows) is centralized into a single color registry per compile, deduped by RGBA value, and shared by UIKit and SwiftUI output as `UIColor(named:)` / `Color("...")`. The exported ZIP includes a matching `Colors.xcassets/<name>.colorset` for each one. Figma has no dark-mode variant to source from, so the generated Dark Appearance entry mirrors the Any Appearance value — edit the color sets in Xcode for a real dark palette.
 
 ## Figma token
 
