@@ -230,6 +230,78 @@ function applyNodeStyle(element, node) {
   if (node.kind === 'component') element.classList.add('component-boundary')
 }
 
+// Raster hoá preview tree lên canvas ngoài màn hình để so pixel với ảnh tham chiếu (xem pixel-diff.js).
+// Cố ý không dùng html2canvas (tránh thêm dependency): tự vẽ rect/radius/text xấp xỉ từ cùng style
+// engine với renderNode, đủ để so khớp bố cục/màu sắc dù không render font hệt hệ điều hành.
+export function rasterizePreviewToCanvas(root, width, height) {
+  const canvas = document.createElement('canvas')
+  canvas.width = Math.max(1, Math.round(width))
+  canvas.height = Math.max(1, Math.round(height))
+  const ctx = canvas.getContext('2d')
+  if (!ctx) return canvas
+  ctx.clearRect(0, 0, canvas.width, canvas.height)
+  drawNodeToCanvas(ctx, root, 0, 0, true)
+  return canvas
+}
+
+function drawNodeToCanvas(ctx, node, offsetX, offsetY, isRoot) {
+  if (node.hidden) return
+  const frame = node.frame || {}
+  const x = isRoot ? 0 : offsetX + (frame.x || 0)
+  const y = isRoot ? 0 : offsetY + (frame.y || 0)
+  const w = Math.max(0, frame.width || ctx.canvas.width)
+  const h = Math.max(0, frame.height || ctx.canvas.height)
+  const style = node.style || {}
+
+  ctx.save()
+  ctx.globalAlpha = style.opacity == null ? 1 : Math.max(0, Math.min(1, style.opacity))
+
+  if (style.radius > 0) roundedRectPath(ctx, x, y, w, h, style.radius)
+  else ctx.rect(x, y, w, h)
+
+  if (style.background && !style.imageUrl) {
+    ctx.fillStyle = cssColorToCanvasFill(style.background)
+    ctx.fill()
+  }
+
+  if (style.borderColor && style.borderWidth) {
+    ctx.lineWidth = style.borderWidth
+    ctx.strokeStyle = style.borderColor
+    ctx.stroke()
+  }
+  ctx.restore()
+
+  if (node.kind === 'label' && node.text) {
+    ctx.save()
+    ctx.globalAlpha = style.opacity == null ? 1 : Math.max(0, Math.min(1, style.opacity))
+    ctx.fillStyle = style.textColor || 'rgba(17, 24, 39, 1)'
+    ctx.font = `${style.fontWeight >= 600 ? 'bold' : 'normal'} ${style.fontSize || 14}px -apple-system, sans-serif`
+    ctx.textBaseline = 'top'
+    ctx.textAlign = style.textAlign === 'center' ? 'center' : style.textAlign === 'right' ? 'right' : 'left'
+    const textX = ctx.textAlign === 'center' ? x + w / 2 : ctx.textAlign === 'right' ? x + w : x
+    ctx.fillText(String(node.text), textX, y, w)
+    ctx.restore()
+  }
+
+  const children = node.children?.length ? node.children : (node.previewChildren || [])
+  for (const child of children) drawNodeToCanvas(ctx, child, x, y, false)
+}
+
+function roundedRectPath(ctx, x, y, w, h, radius) {
+  const r = Math.max(0, Math.min(radius, w / 2, h / 2))
+  ctx.beginPath()
+  ctx.moveTo(x + r, y)
+  ctx.arcTo(x + w, y, x + w, y + h, r)
+  ctx.arcTo(x + w, y + h, x, y + h, r)
+  ctx.arcTo(x, y + h, x, y, r)
+  ctx.arcTo(x, y, x + w, y, r)
+  ctx.closePath()
+}
+
+function cssColorToCanvasFill(value) {
+  return value // rgba()/linear-gradient() string đã hợp lệ với fillStyle; gradient phức tạp sẽ fallback màu đầu do canvas 2D parse fill string trực tiếp
+}
+
 export function walkPreview(root, visitor) {
   visitor(root)
   const children = root.children?.length ? root.children : (root.previewChildren || [])

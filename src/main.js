@@ -4,7 +4,8 @@ import './image-mode.css'
 import { fetchFigmaSelection, parseFigmaUrl, summarizeFigmaTree } from './figma.js'
 import { compileUIKit } from './compiler.js'
 import { analyzeScreenshot } from './screenshot.js'
-import { applySwiftPreview, describeNode, renderUIKitPreview, walkPreview } from './preview.js'
+import { applySwiftPreview, describeNode, rasterizePreviewToCanvas, renderUIKitPreview, walkPreview } from './preview.js'
+import { diffImageData, diffSeverity } from './pixel-diff.js'
 
 const STORAGE_KEY = 'uikitforge.figmaToken'
 const SESSION_KEY = 'uikitforge.figmaToken.session'
@@ -137,6 +138,7 @@ app.innerHTML = `
           <div class="reference-label"><span class="reference-dot"></span><span>Screenshot compare</span></div>
           <input id="overlayRange" type="range" min="0" max="100" value="0" />
           <span id="overlayValue">0%</span>
+          <span id="diffMatchValue" class="diff-match-value" hidden></span>
         </div>
         <div class="preview-canvas grid-enabled" id="previewCanvas">
           <div class="preview-empty"><div class="phone-icon"></div><strong>Preview canvas is ready</strong><span>Image-only no longer needs a Figma URL.</span></div>
@@ -164,7 +166,7 @@ const refs = Object.fromEntries([
   'figmaUrl', 'rootClass', 'outputTarget', 'deploymentTarget', 'figmaToken', 'toggleToken', 'forgetToken', 'rememberToken', 'screenshotImage', 'screenshotDrop', 'screenshotName',
   'generateButton', 'demoButton', 'downloadFileButton', 'downloadAllButton', 'statusText', 'statusMetrics', 'statusProgress',
   'statusStrip', 'workspace', 'fileCount', 'filesList', 'editorLanguage', 'editorFilename', 'codeEditor', 'editorFooter',
-  'previewPanel', 'previewCanvas', 'previewTitle', 'previewSize', 'overlayRange', 'overlayValue', 'inspector', 'layersPanel',
+  'previewPanel', 'previewCanvas', 'previewTitle', 'previewSize', 'overlayRange', 'overlayValue', 'diffMatchValue', 'inspector', 'layersPanel',
   'selectionKind', 'warningsPanel', 'warningCount', 'warningsList', 'zoomOutButton', 'zoomInButton', 'zoomValue',
   'gridButton', 'outlineButton', 'safeAreaButton', 'focusPreviewButton', 'inputModeLabel', 'inputModeHint', 'modeImage', 'modeHybrid', 'modeFigma'
 ].map(id => [id, document.getElementById(id)]))
@@ -389,6 +391,48 @@ function renderPreview() {
     showGrid: state.showGrid, showOutlines: state.showOutlines, showSafeArea: state.showSafeArea,
     onMetrics: metrics => { state.lastScale = metrics.scale; refs.zoomValue.textContent = state.zoom === 'fit' ? `Fit ${Math.round(metrics.scale * 100)}%` : `${Math.round(metrics.scale * 100)}%`; refs.safeAreaButton.disabled = !metrics.phoneLike },
     onSelect: node => { state.selectedNodeId = node.id; renderInspector(node); renderLayers(); renderPreview() }
+  })
+  updatePixelDiff(root)
+}
+
+let diffRunToken = 0
+// So khớp pixel định lượng giữa preview đã raster và ảnh tham chiếu (xem src/pixel-diff.js).
+// Raster hoá là xấp xỉ (không dùng ibtool/Xcode thật), nên % chỉ mang tính tham khảo bố cục/màu, không phải benchmark pixel-perfect.
+async function updatePixelDiff(root) {
+  if (!state.referenceImage) { refs.diffMatchValue.hidden = true; return }
+  const token = ++diffRunToken
+  try {
+    const image = await loadImageElement(state.referenceImage)
+    const width = root.frame?.width || image.naturalWidth
+    const height = root.frame?.height || image.naturalHeight
+    if (!width || !height) return
+
+    const previewCanvas = rasterizePreviewToCanvas(root, width, height)
+    const referenceCanvas = document.createElement('canvas')
+    referenceCanvas.width = previewCanvas.width
+    referenceCanvas.height = previewCanvas.height
+    referenceCanvas.getContext('2d').drawImage(image, 0, 0, referenceCanvas.width, referenceCanvas.height)
+
+    const previewData = previewCanvas.getContext('2d').getImageData(0, 0, previewCanvas.width, previewCanvas.height).data
+    const referenceData = referenceCanvas.getContext('2d').getImageData(0, 0, referenceCanvas.width, referenceCanvas.height).data
+    const result = diffImageData(previewData, referenceData, previewCanvas.width, previewCanvas.height)
+
+    if (token !== diffRunToken) return // một lần raster mới hơn đã chạy trong lúc await
+    refs.diffMatchValue.hidden = false
+    refs.diffMatchValue.textContent = `${result.matchPercent}% match`
+    refs.diffMatchValue.dataset.severity = diffSeverity(result.diffPercent)
+    refs.diffMatchValue.title = `${result.diffPixels} / ${result.comparedPixels} pixels differ (raster approximation, not Xcode-rendered)`
+  } catch {
+    refs.diffMatchValue.hidden = true
+  }
+}
+
+function loadImageElement(src) {
+  return new Promise((resolve, reject) => {
+    const image = new Image()
+    image.onload = () => resolve(image)
+    image.onerror = reject
+    image.src = src
   })
 }
 
