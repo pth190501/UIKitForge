@@ -704,6 +704,11 @@ function collectLayoutWarnings(root) {
     if (node.type === 'VECTOR' || node.type === 'BOOLEAN_OPERATION') warnings.push(`${node.name}: vector geometry is still represented as a UIView placeholder; SVG/PDF asset export is the next compiler stage.`)
     if (node.kind === 'image') warnings.push(`${node.name}: image fill is represented as UIImageView but the binary asset is not exported yet.`)
     if (node.meta?.preservesChildrenOverImageFill) warnings.push(`${node.name}: Figma uses an image fill on a container. UIKitForge preserved its child hierarchy instead of collapsing the container into UIImageView; the background image asset is not exported yet.`)
+    // HIG: vùng chạm tối thiểu 44x44pt. Component instance (INSTANCE trong Figma) thường là nút/control
+    // tương tác, nên đây là proxy hợp lý dù compiler chưa model được khái niệm "tappable" tường minh.
+    if (node.kind === 'component' && (node.frame?.width < 44 || node.frame?.height < 44)) {
+      warnings.push(`${node.name}: component is ${formatNumber(node.frame.width)}x${formatNumber(node.frame.height)}pt, below Apple's 44x44pt minimum tap target. Consider padding the hit area if this is interactive.`)
+    }
   }
   return warnings
 }
