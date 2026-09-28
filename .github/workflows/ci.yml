@@ -15,10 +15,10 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
 
       - name: Setup Node
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@v5
         with:
           node-version: 22
 
@@ -36,14 +36,38 @@ jobs:
       - name: Build
         run: npm run build
 
+  # SwiftLint trên Linux (image chính thức của realm) chạy ~1 phút, song song với job macOS (~3 phút, tốn phút macOS).
+  # Lỗi lint thường gặp nhất nên báo sớm ở đây; job macOS vẫn giữ bước lint để đối chiếu đúng môi trường Xcode.
+  swiftlint-linux:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+
+      - name: Setup Node
+        uses: actions/setup-node@v5
+        with:
+          node-version: 22
+
+      - name: Install dependencies
+        run: npm install
+
+      - name: Dump generated fixtures
+        run: node scripts/ci-dump-fixtures.mjs
+
+      - name: swiftlint --strict (Linux)
+        run: |
+          docker run --rm -v "$PWD:/work" -w /work ghcr.io/realm/swiftlint:latest \
+            swiftlint lint --strict --config ci-artifacts/.swiftlint.yml ci-artifacts
+
   native-validate:
     runs-on: macos-latest
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
 
       - name: Setup Node
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@v5
         with:
           node-version: 22
 
