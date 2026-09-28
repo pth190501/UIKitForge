@@ -314,6 +314,98 @@ private final class CornerRadiiShapeView: UIView {
 }
 `
 
+// Figma blur radius liên tục, UIKit chỉ có vài material — chọn mức gần nhất (iOS 13+).
+export function blurMaterial(radius) {
+  if (radius <= 10) return 'systemUltraThinMaterial'
+  if (radius <= 20) return 'systemThinMaterial'
+  if (radius <= 40) return 'systemMaterial'
+  return 'systemThickMaterial'
+}
+
+function backgroundBlurLines(node, targetRef) {
+  const { style } = node
+  const lines = ['        do {', `            let blurView = BlurBackgroundView(effect: UIBlurEffect(style: .${blurMaterial(style.backgroundBlur)}))`]
+  if (style.radius > 0) lines.push(`            blurView.layer.cornerRadius = ${formatNumber(style.radius)}`)
+  lines.push(`            blurView.install(in: ${targetRef === 'self' ? 'self' : targetRef})`, '        }')
+  return lines
+}
+
+function innerShadowLines(node, targetRef, hint, colorRegistry) {
+  const { innerShadow, radius } = node.style
+  const lines = [
+    '        do {',
+    '            let innerShadow = InnerShadowView()',
+    `            innerShadow.shadowColor = ${namedColor(colorRegistry, innerShadow.color || 'rgba(0, 0, 0, 0.25)', `${hint}InnerShadow`)}`,
+    `            innerShadow.shadowOffset = CGSize(width: ${formatNumber(innerShadow.x)}, height: ${formatNumber(innerShadow.y)})`,
+    `            innerShadow.shadowBlur = ${formatNumber(innerShadow.blur)}`
+  ]
+  if (radius > 0) lines.push(`            innerShadow.cornerRadius = ${formatNumber(radius)}`)
+  lines.push(`            innerShadow.install(in: ${targetRef === 'self' ? 'self' : targetRef})`, '        }')
+  return lines
+}
+
+// Fill của host chuyển vào contentView của blur: Figma vẽ fill (thường bán trong suốt) phía trên lớp blur nền.
+const BLUR_BACKGROUND_HELPER = `
+private final class BlurBackgroundView: UIVisualEffectView {
+    func install(in host: UIView) {
+        isUserInteractionEnabled = false
+        clipsToBounds = true
+        contentView.backgroundColor = host.backgroundColor
+        host.backgroundColor = .clear
+        translatesAutoresizingMaskIntoConstraints = false
+        host.insertSubview(self, at: 0)
+        NSLayoutConstraint.activate([
+            leadingAnchor.constraint(equalTo: host.leadingAnchor),
+            trailingAnchor.constraint(equalTo: host.trailingAnchor),
+            topAnchor.constraint(equalTo: host.topAnchor),
+            bottomAnchor.constraint(equalTo: host.bottomAnchor)
+        ])
+    }
+}
+`
+
+// Inner shadow: CAShapeLayer hình "khung" (hình chữ nhật lớn trừ hình view, even-odd) nằm ngoài bounds nên bị clip,
+// chỉ còn bóng của khung đổ vào trong — đúng kiểu inner shadow của Figma, không cần vẽ ảnh.
+const INNER_SHADOW_HELPER = `
+private final class InnerShadowView: UIView {
+    var shadowColor: UIColor?
+    var shadowOffset: CGSize = .zero
+    var shadowBlur: CGFloat = 0
+    var cornerRadius: CGFloat = 0
+    private let shadowLayer = CAShapeLayer()
+
+    func install(in host: UIView) {
+        isUserInteractionEnabled = false
+        clipsToBounds = true
+        layer.addSublayer(shadowLayer)
+        translatesAutoresizingMaskIntoConstraints = false
+        host.insertSubview(self, at: 0)
+        NSLayoutConstraint.activate([
+            leadingAnchor.constraint(equalTo: host.leadingAnchor),
+            trailingAnchor.constraint(equalTo: host.trailingAnchor),
+            topAnchor.constraint(equalTo: host.topAnchor),
+            bottomAnchor.constraint(equalTo: host.bottomAnchor)
+        ])
+    }
+
+    override func layoutSubviews() {
+        super.layoutSubviews()
+        layer.cornerRadius = cornerRadius
+        let spread = shadowBlur * 2 + max(abs(shadowOffset.width), abs(shadowOffset.height)) + 1
+        let path = UIBezierPath(rect: bounds.insetBy(dx: -spread, dy: -spread))
+        path.append(UIBezierPath(roundedRect: bounds, cornerRadius: cornerRadius))
+        shadowLayer.frame = bounds
+        shadowLayer.path = path.cgPath
+        shadowLayer.fillRule = .evenOdd
+        shadowLayer.fillColor = UIColor.black.cgColor
+        shadowLayer.shadowColor = shadowColor?.cgColor
+        shadowLayer.shadowOffset = shadowOffset
+        shadowLayer.shadowRadius = shadowBlur / 2
+        shadowLayer.shadowOpacity = 1
+    }
+}
+`
+
 export function backgroundAssetName(node) {
   return `${node.outlet}Background`
 }
@@ -357,6 +449,8 @@ function withGradientHelper(swift) {
   if (out.includes('GradientLayerView()')) out += GRADIENT_HELPER
   if (out.includes('BackgroundImageView(')) out += BACKGROUND_IMAGE_HELPER
   if (out.includes('CornerRadiiShapeView(')) out += CORNER_RADII_HELPER
+  if (out.includes('BlurBackgroundView(')) out += BLUR_BACKGROUND_HELPER
+  if (out.includes('InnerShadowView()')) out += INNER_SHADOW_HELPER
   return withLengthGuards(out)
 }
 
@@ -517,8 +611,12 @@ export function todosOf(node, parentNode = null, rasterized = false) {
     else if (gradient && !gradient.gradientHandlePositions) todos.push('gradient thiếu handle; đang giả định hướng trên → dưới.')
   }
   const effects = (node.effects || []).filter(visible)
-  const unsupported = [...new Set(effects.filter(item => item.type !== 'DROP_SHADOW').map(item => item.type.toLowerCase().replace(/_/g, ' ')))]
+  // Drop/inner shadow và background blur đã sinh code; layer blur chỉ SwiftUI có (.blur) — UIKit không có API công khai.
+  const handled = new Set(['DROP_SHADOW', 'INNER_SHADOW', 'BACKGROUND_BLUR'])
+  const unsupported = [...new Set(effects.filter(item => !handled.has(item.type) && item.type !== 'LAYER_BLUR').map(item => item.type.toLowerCase().replace(/_/g, ' ')))]
   if (unsupported.length) todos.push(`effect ${unsupported.join(', ')} chưa được sinh code.`)
+  if (effects.some(item => item.type === 'LAYER_BLUR')) todos.push('layer blur: UIKit không có API công khai để blur nội dung view (SwiftUI đã dùng .blur).')
+  if (effects.filter(item => item.type === 'INNER_SHADOW').length > 1) todos.push('nhiều inner shadow; code chỉ giữ inner shadow đầu tiên.')
   if (effects.filter(item => item.type === 'DROP_SHADOW').length > 1) todos.push('nhiều drop shadow; code chỉ giữ shadow đầu tiên.')
   if (node.blendMode && !['NORMAL', 'PASS_THROUGH'].includes(node.blendMode)) todos.push(`blend mode ${node.blendMode.toLowerCase()} chưa hỗ trợ.`)
   // maskedCorners chỉ bật/tắt góc với cùng một bán kính; bán kính khác nhau thật sự thì UIKit cần mask path riêng.
@@ -664,6 +762,20 @@ function fallbackBounds(node) {
   return { x: 0, y: 0, width: box.x || 1, height: box.y || 1 }
 }
 
+function shadowOf(effect) {
+  if (!effect) return null
+  return {
+    x: round(effect.offset?.x || 0), y: round(effect.offset?.y || 0),
+    blur: round(effect.radius || 0), spread: round(effect.spread || 0),
+    color: paintColorToRgba(effect.color)
+  }
+}
+
+function blurRadiusOf(node, type) {
+  const effect = (node.effects || []).find(item => item?.visible !== false && item?.type === type)
+  return effect ? round(effect.radius || 0) : 0
+}
+
 export function mixedCornerRadii(node) {
   const radii = Array.isArray(node.rectangleCornerRadii) ? node.rectangleCornerRadii.map(value => round(value || 0)) : null
   return radii?.length === 4 && new Set(radii).size > 1 ? radii : null
@@ -703,6 +815,9 @@ function extractStyle(node) {
       blur: round(effect.radius || 0), spread: round(effect.spread || 0),
       color: paintColorToRgba(effect.color)
     } : null,
+    innerShadow: shadowOf((node.effects || []).find(item => item?.visible !== false && item?.type === 'INNER_SHADOW')),
+    backgroundBlur: blurRadiusOf(node, 'BACKGROUND_BLUR'),
+    layerBlur: blurRadiusOf(node, 'LAYER_BLUR'),
     // Nền gradient (không có màu đặc) — sinh CAGradientLayer / LinearGradient thay vì bỏ trống nền như trước.
     gradient: node.type === 'TEXT' || fill ? null : gradientOf(node),
     clipsContent: Boolean(node.clipsContent)
@@ -913,6 +1028,8 @@ function generateSwiftStyleLines(root, { includeStatic = false, rootRef = 'conte
     if (index > 0 && node.kind === 'component' && node.overrides?.length) lines.push(...configureCallLines(target, node.overrides))
     // Bán kính khác nhau thật sự (không chỉ bật/tắt góc) → nền + viền vẽ bằng CornerRadiiShapeView thay cho
     // backgroundColor/cornerRadius/border của layer; gradient vẫn dùng góc lớn nhất (còn TODO).
+    // Helper nền đều chèn ở index 0 → dòng sinh trước nằm trên: inner shadow → nền (shape/gradient/ảnh) → blur.
+    if (includeStatic && style.innerShadow && node.kind !== 'image') lines.push(...innerShadowLines(node, targetRef, hint, colorRegistry))
     const shapedCorners = includeStatic && hasUnevenRadii(style) && !style.gradient && node.kind !== 'image'
     if (shapedCorners) lines.push(...cornerShapeLines(node, targetRef, hint, colorRegistry))
     if (includeStatic && style.background && !shapedCorners) lines.push(`        ${target}backgroundColor = ${namedColor(colorRegistry, style.background, `${hint}Background`)}`)
@@ -925,6 +1042,7 @@ function generateSwiftStyleLines(root, { includeStatic = false, rootRef = 'conte
     }
     if (includeStatic && style.gradient && node.kind !== 'image') lines.push(...gradientLines(node, targetRef, hint, colorRegistry))
     if (includeStatic && style.backgroundImage) lines.push(...backgroundImageLines(node, targetRef))
+    if (includeStatic && style.backgroundBlur && node.kind !== 'image') lines.push(...backgroundBlurLines(node, targetRef))
     if (style.borderColor && style.borderWidth > 0 && !shapedCorners) {
       lines.push(`        ${target}layer.borderColor = ${cgColor(namedColor(colorRegistry, style.borderColor, `${hint}Border`))}`)
       lines.push(`        ${target}layer.borderWidth = ${formatNumber(style.borderWidth)}`)

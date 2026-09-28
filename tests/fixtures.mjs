@@ -102,6 +102,9 @@ export const fidelityScreen = {
         children: [{ id: '1:12', type: 'TEXT', name: 'Banner Title', characters: 'Data không giới hạn', fills: solid(1, 1, 1), style: { fontSize: 18, fontWeight: 700 }, ...box(32, 416, 200, 24) }] },
       { id: '1:13', type: 'FRAME', name: 'Ring', ...box(250, 400, 80, 40),
         fills: [{ type: 'GRADIENT_ANGULAR', gradientHandlePositions: [{ x: 0.5, y: 0.5 }, { x: 0.5, y: 0 }, { x: 1, y: 0.5 }], gradientStops: [stop(0, 1, 0, 0), stop(1, 0, 0, 1)] }] },
+      { id: '1:14', type: 'FRAME', name: 'Glass', cornerRadius: 16, fills: [{ type: 'SOLID', color: { r: 1, g: 1, b: 1, a: 0.4 } }],
+        effects: [{ type: 'BACKGROUND_BLUR', radius: 20 }], ...box(16, 530, 170, 24) },
+      { id: '1:15', type: 'FRAME', name: 'Soft', fills: solid(0.2, 0.6, 1), effects: [{ type: 'LAYER_BLUR', radius: 8 }], ...box(200, 530, 170, 24) },
       { id: '1:8', type: 'TEXT', name: 'Brand', characters: 'Viettel', ...box(16, 300, 100, 20), style: { fontFamily: 'Viettel Sans', fontSize: 14, fontWeight: 400 } }
     ]
   }

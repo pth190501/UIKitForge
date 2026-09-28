@@ -262,10 +262,19 @@ function applyNodeStyle(element, node) {
   // Bo góc không đồng nghĩa với clip (UIKit/Figma đều vậy) — chỉ cắt khi clipsContent, còn ảnh thì cần bo theo góc.
   if (style.clipsContent || (style.radius && node.kind === 'image')) element.style.overflow = 'hidden'
 
+  const shadows = []
   if (style.shadow) {
     const shadow = style.shadow
-    element.style.boxShadow = `${shadow.x || 0}px ${shadow.y || 0}px ${Math.max(0, shadow.blur || 0)}px ${shadow.spread || 0}px ${shadow.color || 'rgba(0,0,0,.2)'}`
+    shadows.push(`${shadow.x || 0}px ${shadow.y || 0}px ${Math.max(0, shadow.blur || 0)}px ${shadow.spread || 0}px ${shadow.color || 'rgba(0,0,0,.2)'}`)
   }
+  if (style.innerShadow) {
+    const shadow = style.innerShadow
+    shadows.push(`inset ${shadow.x || 0}px ${shadow.y || 0}px ${Math.max(0, shadow.blur || 0)}px ${shadow.spread || 0}px ${shadow.color || 'rgba(0,0,0,.25)'}`)
+  }
+  if (shadows.length) element.style.boxShadow = shadows.join(', ')
+  // Figma blur radius ≈ gấp đôi độ lệch chuẩn CSS blur().
+  if (style.backgroundBlur) element.style.backdropFilter = `blur(${style.backgroundBlur / 2}px)`
+  if (style.layerBlur) element.style.filter = `blur(${style.layerBlur / 2}px)`
 
   if (node.kind === 'label') {
     element.style.color = style.textColor || '#111827'

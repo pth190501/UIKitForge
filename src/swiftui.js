@@ -1,4 +1,4 @@
-import { formatNumber, isSystemFontFamily, todoCommentLines, parseRgba, swiftFontWeight, swiftString } from './compiler-core.js'
+import { blurMaterial, formatNumber, isSystemFontFamily, todoCommentLines, parseRgba, swiftFontWeight, swiftString } from './compiler-core.js'
 import { normalizeArchitecture, viperEntity, viperInteractor, viperNames, viperSharedProtocols } from './uikit-router.js'
 
 // Sinh SwiftUI MVVM-R từ cùng IR với UIKit. Router dùng UIHostingController để chạy giống nhau từ iOS 13,
@@ -25,9 +25,25 @@ export function generateSwiftUIFiles({ rootClass, mainIR, componentIRs = [], dep
 }
 
 function swiftFile(path, content, kind) {
-  const withHelpers = content.includes('CornerRadiiShape(') ? `${content}${CORNER_RADII_SHAPE}` : content
+  let withHelpers = content.includes('CornerRadiiShape(') ? `${content}${CORNER_RADII_SHAPE}` : content
+  if (content.includes('BlurBackground(')) withHelpers += BLUR_BACKGROUND
   return { path, name: path.split('/').pop(), language: 'swift', content: wrapLongComments(withHelpers), kind, target: 'swiftui' }
 }
+
+// Material của SwiftUI (.ultraThinMaterial) chỉ có từ iOS 15 — bọc UIVisualEffectView để chạy từ iOS 13 như UIKit.
+const BLUR_BACKGROUND = `
+private struct BlurBackground: UIViewRepresentable {
+    let style: UIBlurEffect.Style
+
+    func makeUIView(context: Context) -> UIVisualEffectView {
+        UIVisualEffectView(effect: UIBlurEffect(style: style))
+    }
+
+    func updateUIView(_ uiView: UIVisualEffectView, context: Context) {
+        uiView.effect = UIBlurEffect(style: style)
+    }
+}
+`
 
 // private (fileprivate ở top level) → mỗi file tự mang helper mà không trùng khai báo khi build chung target.
 // addArc(tangent1End:tangent2End:) với radius 0 vẽ thẳng tới góc, nên góc vuông không cần xử lý riêng.
@@ -367,6 +383,8 @@ function styleModifiers(node, includeShape, ctx) {
   // góc (nhãn "Hot") không bị cắt — .clipShape sẽ cắt luôn cả overlay.
   const clips = style.clipsContent || node.kind === 'image'
   const shape = shapeExpression(style)
+  // Inner shadow gắn trước fill/ảnh nền → nằm trên fill nhưng dưới nội dung/view con (như Figma); overlay sẽ đè lên con.
+  if (includeShape && style.innerShadow) lines.push(...innerShadowModifier(style, shape, ctx, hint))
   // Ảnh nền đặt trước màu nền (background sau nằm dưới). Color.clear nhận đúng khung view, ảnh scaledToFill tràn ra
   // được .clipped() cắt theo khung đó — không clip cả view (con tràn góc vẫn hiện).
   if (style.backgroundImage) {
@@ -378,6 +396,10 @@ function styleModifiers(node, includeShape, ctx) {
     lines.push('.background(', `    ${shape}`, '        .fill(', ...indent(fill, 3), '        )', ')')
   } else if (fill) {
     lines.push(...(fill.length === 1 ? [`.background(${fill[0]})`] : ['.background(', ...indent(fill, 1), ')']))
+  }
+  // Blur nền nằm dưới fill (background gắn sau thì nằm dưới) và được cắt theo hình của view.
+  if (includeShape && style.backgroundBlur) {
+    lines.push('.background(', `    BlurBackground(style: .${blurMaterial(style.backgroundBlur)})`, `        .clipShape(${shape})`, ')')
   }
   if (includeShape && style.radius > 0 && clips) lines.push(`.clipShape(${shape})`)
   if (includeShape && style.borderColor && style.borderWidth > 0) {
@@ -399,8 +421,25 @@ function styleModifiers(node, includeShape, ctx) {
       ')'
     )
   }
+  if (style.layerBlur) lines.push(`.blur(radius: ${formatNumber(style.layerBlur / 2)})`)
   if (style.opacity < 1) lines.push(`.opacity(${formatNumber(style.opacity)})`)
   return lines
+}
+
+// Inner shadow: viền dày = blur, làm mờ, dịch theo offset rồi mask theo chính hình view → bóng chỉ nằm phía trong.
+// Là background (không phải overlay) để nằm dưới view con.
+function innerShadowModifier(style, shape, ctx, hint) {
+  const shadow = style.innerShadow
+  return [
+    '.background(',
+    `    ${shape}`,
+    `        .stroke(${color(ctx, shadow.color || 'rgba(0, 0, 0, 0.25)', `${hint}InnerShadow`)}, lineWidth: ${formatNumber(Math.max(1, shadow.blur))})`,
+    `        .blur(radius: ${formatNumber(shadow.blur / 2)})`,
+    `        .offset(x: ${formatNumber(shadow.x)}, y: ${formatNumber(shadow.y)})`,
+    // .mask(_:) deprecated từ iOS 15 → dùng dạng closure khi target cho phép.
+    ctx.api.foregroundStyle ? `        .mask { ${shape} }` : `        .mask(${shape})`,
+    ')'
+  ]
 }
 
 function gradientLines(node, ctx, hint) {

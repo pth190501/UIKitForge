@@ -61,14 +61,26 @@ for (const source of [code, swiftUI]) {
 for (const source of [code, swiftUI]) {
   assert.match(source, /\/\/ TODO: \[glow\] radial gradient/)
   assert.doesNotMatch(source, /TODO: \[conic\] gradient angular/, 'angular gradient giờ sinh native')
-  assert.match(source, /\/\/ TODO: \[conic\] effect inner shadow/)
+  assert.doesNotMatch(source, /TODO: \[conic\] effect inner shadow/, 'inner shadow giờ sinh code')
   assert.match(source, /\/\/ TODO: \[brand\] font "Viettel Sans"/)
   assert.doesNotMatch(source, /TODO: \[hero\]/, 'gradient đủ handle thì không cần TODO')
   for (const line of source.split('\n')) assert.ok(line.length <= 120 || !line.includes('TODO'), `TODO comment too long: ${line}`)
 }
 const todo = compiled.files.find(file => file.path === 'TODO.md')
 assert.ok(todo, 'TODO.md must ship with the export')
-assert.match(todo.content, /- \[ \] `conic` \(Conic\): effect inner shadow/)
+assert.match(todo.content, /- \[ \] `conic` \(Conic\): gradient thiếu handle/)
+// P4: inner shadow (khung even-odd + shadow), background blur (material theo radius), layer blur (SwiftUI + TODO UIKit).
+assert.match(code, /let innerShadow = InnerShadowView\(\)\n\s+innerShadow\.shadowColor = UIColor\(named: "\w+"\)\n\s+innerShadow\.shadowOffset = CGSize\(width: 0, height: 1\)\n\s+innerShadow\.shadowBlur = 4\n\s+innerShadow\.install\(in: conic\)/)
+assert.match(code, /private final class InnerShadowView: UIView/)
+assert.match(code, /let blurView = BlurBackgroundView\(effect: UIBlurEffect\(style: \.systemThinMaterial\)\)\n\s+blurView\.layer\.cornerRadius = 16\n\s+blurView\.install\(in: glass\)/)
+assert.match(code, /private final class BlurBackgroundView: UIVisualEffectView/)
+assert.match(swiftUI, /BlurBackground\(style: \.systemThinMaterial\)\n\s+\.clipShape\(RoundedRectangle\(cornerRadius: 16\)\)/)
+assert.match(swiftUI, /private struct BlurBackground: UIViewRepresentable/)
+assert.match(swiftUI, /\.stroke\(Color\("\w+"\), lineWidth: 4\)\n\s+\.blur\(radius: 2\)\n\s+\.offset\(x: 0, y: 1\)\n\s+\.mask\(RoundedRectangle\(cornerRadius: 0\)\)/)
+assert.match(swiftUI, /\.blur\(radius: 4\)/)
+assert.match(code, /\/\/ TODO: \[soft\] layer blur: UIKit/)
+assert.doesNotMatch(swiftUI, /TODO: \[glass\]/)
+assert.equal(node('glass').style.backgroundBlur, 20)
 // P3: angular gradient native — .conic (UIKit) và AngularGradient (SwiftUI).
 assert.match(code, /gradientView\.gradient\.type = \.conic/)
 assert.match(swiftUI, /AngularGradient\(\n[\s\S]*?startAngle: \.degrees\(/)
