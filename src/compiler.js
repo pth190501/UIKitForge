@@ -1,4 +1,4 @@
-import { collectTodoItems, compileUIKit as compileCore, sanitizeOutletName, textRunsOf, todoMarkdown } from './compiler-core.js'
+import { collectTodoItems, compileUIKit as compileCore, displayText, sanitizeOutletName, textRunsOf, todoMarkdown } from './compiler-core.js'
 import { figmaPaintToCss, firstVisiblePaint, isRasterCandidate } from './figma.js'
 import { applySwiftPreview } from './preview.js'
 import { generateSwiftUIFiles } from './swiftui.js'
@@ -196,7 +196,7 @@ function rawToPreview(node, parent, imageMap) {
     outlet: sanitizeOutletName(node.name || kind),
     frame,
     constraints: inferConstraints(node, parent, frame),
-    text: node.type === 'TEXT' ? String(node.characters || '') : '',
+    text: node.type === 'TEXT' ? displayText(node) : '',
     textRuns: node.type === 'TEXT' ? textRunsOf(node) : null,
     style: extractStyle(node, imageMap),
     layout: extractLayout(node),
@@ -242,6 +242,7 @@ function extractStyle(node, imageMap = {}) {
     fontWeight: normalizeFontWeight(textStyle.fontWeight || 400),
     lineHeight: round(textStyle.lineHeightPx || 0),
     letterSpacing: round(textStyle.letterSpacing || 0),
+    textDecoration: ['UNDERLINE', 'STRIKETHROUGH'].includes(textStyle.textDecoration) ? textStyle.textDecoration : null,
     textAlign: String(textStyle.textAlignHorizontal || 'LEFT').toLowerCase(),
     numberOfLines: textStyle.textAutoResize === 'HEIGHT' || textStyle.textAutoResize === 'WIDTH_AND_HEIGHT' ? 0 : 1,
     imageRef: imagePaint?.imageRef || null,

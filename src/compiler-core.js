@@ -108,7 +108,7 @@ function componentSlots(ir, entry) {
   for (const node of flatten(ir).slice(1)) {
     const key = internalKey(node.figmaId, entry.source.id)
     if (!key) continue
-    if (node.kind === 'label' && indexes.some(index => { const raw = index.get(key); return raw?.type === 'TEXT' && String(raw.characters ?? '') !== node.text })) {
+    if (node.kind === 'label' && indexes.some(index => { const raw = index.get(key); return raw?.type === 'TEXT' && displayText(raw) !== node.text })) {
       slots.push({ kind: 'text', key, nodeId: node.id, outlet: node.outlet, param: `${node.outlet}Text`, fallback: node.text })
     }
     if (indexes.some(index => { const raw = index.get(key); return !raw || raw.visible === false })) {
@@ -126,26 +126,51 @@ function annotateInstanceOverrides(root, rawById, slotsByClass) {
     const index = indexInstance(raw)
     node.overrides = slots.map(slot => {
       const target = index.get(slot.key)
-      const value = slot.kind === 'text' ? (target?.type === 'TEXT' ? String(target.characters ?? '') : slot.fallback) : (!target || target.visible === false)
+      const value = slot.kind === 'text' ? (target?.type === 'TEXT' ? displayText(target) : slot.fallback) : (!target || target.visible === false)
       return { slot, value }
     })
   }
 }
 
-// Đoạn khác weight → NSAttributedString; phần còn lại không gắn .font nên UILabel dùng font/màu của chính label.
-// Bọc `do { }` để biến cục bộ tên cố định: không trùng giữa các label, không vượt identifier_name (40 ký tự)
-// như khi ghép outlet dài + hậu tố.
-function attributedTextLines(node, targetRef) {
+// Label cần NSAttributedString khi có: đoạn khác kiểu, letter spacing, line height (nhiều dòng) hoặc gạch chân/ngang.
+function needsAttributedText(node) {
+  const { style } = node
+  return Boolean(node.textRuns || style.letterSpacing || style.textDecoration || (style.lineHeight > 0 && style.numberOfLines !== 1))
+}
+
+const DECORATION_ATTRIBUTE = { UNDERLINE: '.underlineStyle', STRIKETHROUGH: '.strikethroughStyle' }
+
+// Thuộc tính không gắn (font/màu gốc) thì UILabel dùng font/textColor của chính nó. Bọc `do { }` để biến cục bộ tên cố
+// định: không trùng giữa các label, không vượt identifier_name (40 ký tự) như khi ghép outlet dài + hậu tố.
+function attributedTextLines(node, targetRef, colorRegistry, hint) {
+  const { style } = node
+  const label = targetRef === 'self' ? 'self' : targetRef
   const lines = ['        do {', `            let attributed = NSMutableAttributedString(string: ${swiftString(node.text)})`]
-  const baseWeight = node.style.fontWeight
-  for (const run of node.textRuns.filter(item => item.fontWeight !== baseWeight)) {
+  const all = 'NSRange(location: 0, length: attributed.length)'
+  const add = (name, value, range) => lines.push('            attributed.addAttribute(', `                ${name},`, `                value: ${value},`, `                range: ${range}`, '            )')
+  if (style.lineHeight > 0 && style.numberOfLines !== 1) {
+    // Paragraph style ghi đè textAlignment/lineBreakMode của label → đặt lại cho khớp. UIKit dồn khoảng dư của line
+    // height lên trên glyph; baselineOffset (lineHeight - font.lineHeight) / 4 đưa chữ về giữa dòng như Figma.
     lines.push(
-      '            attributed.addAttribute(',
-      '                .font,',
-      `                value: ${swiftFontExpression({ ...node.style, fontWeight: run.fontWeight }).replace(/\n\s*/, '')},`,
-      `                range: NSRange(location: ${run.start}, length: ${run.end - run.start})`,
-      '            )'
+      '            let paragraph = NSMutableParagraphStyle()',
+      `            paragraph.minimumLineHeight = ${formatNumber(style.lineHeight)}`,
+      `            paragraph.maximumLineHeight = ${formatNumber(style.lineHeight)}`,
+      `            paragraph.alignment = .${swiftTextAlignment(style.textAlign)}`
     )
+    add('.paragraphStyle', 'paragraph', all)
+    add('.baselineOffset', `(${formatNumber(style.lineHeight)} - (${label}.font?.lineHeight ?? ${formatNumber(style.lineHeight)})) / 4`, all)
+  }
+  if (style.letterSpacing) add('.kern', formatNumber(style.letterSpacing), all)
+  if (style.textDecoration) add(DECORATION_ATTRIBUTE[style.textDecoration], 'NSUnderlineStyle.single.rawValue', all)
+  for (const run of node.textRuns || []) {
+    const range = `NSRange(location: ${run.start}, length: ${run.end - run.start})`
+    if (run.fontWeight !== style.fontWeight) add('.font', swiftFontExpression({ ...style, fontWeight: run.fontWeight }).replace(/\n\s*/, ''), range)
+    if (run.color && run.color !== style.textColor) add('.foregroundColor', `${namedColor(colorRegistry, run.color, `${hint}Run`)} ?? .label`, range)
+    if (run.decoration !== style.textDecoration) {
+      // Đoạn bỏ gạch (decoration null trong khi label có gạch) → gán 0 cho đúng attribute của label.
+      const attribute = DECORATION_ATTRIBUTE[run.decoration || style.textDecoration]
+      add(attribute, run.decoration ? 'NSUnderlineStyle.single.rawValue' : '0', range)
+    }
   }
   lines.push(`            ${targetRef === 'self' ? '' : `${targetRef}.`}attributedText = attributed`, '        }')
   return lines
@@ -307,7 +332,7 @@ function buildIR(node, parentNode, componentMap, options = {}) {
     priorities: {},
     constraints: [],
     stack: null,
-    text: node.type === 'TEXT' ? String(node.characters || '') : '',
+    text: node.type === 'TEXT' ? displayText(node) : '',
     textRuns: node.type === 'TEXT' ? textRunsOf(node) : null,
     style: rasterized ? rasterStyle(extractStyle(node)) : extractStyle(node),
     layout: extractLayout(node),
@@ -373,7 +398,6 @@ export function todosOf(node, parentNode = null, rasterized = false) {
   if (node.type === 'TEXT') {
     const family = node.style?.fontFamily
     if (family && !isSystemFontFamily(family)) todos.push(`font "${family}" cần bundle vào app (UIAppFonts trong Info.plist).`)
-    if (node.style?.textDecoration && node.style.textDecoration !== 'NONE') todos.push(`text decoration ${node.style.textDecoration.toLowerCase()} chưa được sinh code.`)
   }
   if (parentNode && node.layoutPositioning === 'ABSOLUTE' && isAutoLayout(parentNode)) {
     const own = node.absoluteBoundingBox
@@ -421,19 +445,49 @@ function collectUnknownContainerTypes(node, types = new Set()) {
 
 // Đoạn chữ khác kiểu (vd "Số **0123 456 789** của bạn…"). REST: characterStyleOverrides[i] trỏ vào
 // styleOverrideTable (0 = kiểu gốc, số 0 ở cuối có thể bị lược). Chỉ lấy đoạn khác font-weight gốc.
+// Figma lưu chữ gốc và hiển thị theo textCase — áp luôn vào chuỗi sinh ra để code/preview khớp thiết kế.
+export function displayText(node) {
+  const text = String(node.characters || '')
+  switch (node.style?.textCase) {
+    case 'UPPER': return text.toUpperCase()
+    case 'LOWER': return text.toLowerCase()
+    case 'TITLE': return text.replace(/(^|\s)(\S)/g, (_, space, char) => `${space}${char.toUpperCase()}`)
+    default: return text
+  }
+}
+
+function decorationOf(value) {
+  return value === 'UNDERLINE' || value === 'STRIKETHROUGH' ? value : null
+}
+
+// Đoạn chữ có kiểu khác phần còn lại (weight, màu, gạch chân/ngang) — REST: characterStyleOverrides + styleOverrideTable.
+// Chỉ trả runs khi có đoạn khác kiểu gốc; màu/decoration gốc do label tự mang nên run chỉ ghi phần khác.
 export function textRunsOf(node) {
   const overrides = node.characterStyleOverrides || []
   const table = node.styleOverrideTable || {}
-  const text = String(node.characters || '')
-  const baseWeight = normalizeFontWeight(node.style?.fontWeight || 400)
+  const text = displayText(node)
+  const base = {
+    fontWeight: normalizeFontWeight(node.style?.fontWeight || 400),
+    color: paintToRgba(firstVisibleSolidPaint(node.fills || [])),
+    decoration: decorationOf(node.style?.textDecoration)
+  }
+  const styleAt = index => {
+    const override = table[overrides[index]] || {}
+    return {
+      fontWeight: override.fontWeight ? normalizeFontWeight(override.fontWeight) : base.fontWeight,
+      color: override.fills ? paintToRgba(firstVisibleSolidPaint(override.fills)) || base.color : base.color,
+      decoration: 'textDecoration' in override ? decorationOf(override.textDecoration) : base.decoration
+    }
+  }
+  const same = (a, b) => a.fontWeight === b.fontWeight && a.color === b.color && a.decoration === b.decoration
   const runs = []
   for (let index = 0; index < text.length; index++) {
-    const weight = normalizeFontWeight(table[overrides[index]]?.fontWeight || baseWeight)
+    const style = styleAt(index)
     const last = runs[runs.length - 1]
-    if (last && last.fontWeight === weight) last.end = index + 1
-    else runs.push({ start: index, end: index + 1, fontWeight: weight })
+    if (last && same(last, style)) last.end = index + 1
+    else runs.push({ start: index, end: index + 1, ...style })
   }
-  if (!runs.some(run => run.fontWeight !== baseWeight)) return null
+  if (!runs.some(run => !same(run, base))) return null
   // Giữ chuỗi gốc của từng đoạn để nơi dùng nhận ra text đã bị override (offset không còn đúng).
   return runs.map(run => ({ ...run, text: text.slice(run.start, run.end) }))
 }
@@ -502,7 +556,9 @@ function extractStyle(node) {
     fontSize: round(textStyle.fontSize || 14),
     fontFamily: textStyle.fontFamily || 'System',
     fontWeight: normalizeFontWeight(textStyle.fontWeight || 400),
-    lineHeight: round(textStyle.lineHeightPx || 0),
+    // Line height "Auto" (INTRINSIC_%) là mặc định của font — chỉ sinh code khi designer đặt giá trị cụ thể.
+    lineHeight: textStyle.lineHeightUnit === 'INTRINSIC_%' ? 0 : round(textStyle.lineHeightPx || 0),
+    textDecoration: decorationOf(textStyle.textDecoration),
     letterSpacing: round(textStyle.letterSpacing || 0),
     textAlign: String(textStyle.textAlignHorizontal || 'LEFT').toLowerCase(),
     numberOfLines: textStyle.textAutoResize === 'HEIGHT' || textStyle.textAutoResize === 'WIDTH_AND_HEIGHT' ? 0 : 1,
@@ -738,7 +794,7 @@ function generateSwiftStyleLines(root, { includeStatic = false, rootRef = 'conte
         if (style.textAlign !== 'left') lines.push(`        ${target}textAlignment = .${swiftTextAlignment(style.textAlign)}`)
       }
       lines.push(`        ${target}font = ${swiftFontExpression(style)}`)
-      if (includeStatic && node.textRuns) lines.push(...attributedTextLines(node, targetRef))
+      if (includeStatic && needsAttributedText(node)) lines.push(...attributedTextLines(node, targetRef, colorRegistry, hint))
       // adjustsFontForContentSizeCategory: UIFont.systemFont không tự scale theo Dynamic Type như SwiftUI's
       // .system(size:) — phải bật cờ này + UIFontMetrics ở trên thì UILabel mới tôn trọng cỡ chữ hệ thống.
       lines.push(`        ${target}adjustsFontForContentSizeCategory = true`)

@@ -224,6 +224,8 @@ function renderNode(node, isRoot, selectedId, onSelect, parentStack = null) {
 
 // Đoạn khác weight (giống NSAttributedString / Text + Text đã sinh) → <span> riêng. Chỉ dùng khi các đoạn ghép lại
 // đúng bằng text hiện tại: instance override đổi text thì offset cũ vô nghĩa, quay về text thường.
+const CSS_DECORATION = { UNDERLINE: 'underline', STRIKETHROUGH: 'line-through' }
+
 function renderLabelText(element, node) {
   const text = node.text || ''
   const runs = node.textRuns
@@ -235,6 +237,8 @@ function renderLabelText(element, node) {
     const span = document.createElement('span')
     span.textContent = run.text
     if (run.fontWeight !== node.style?.fontWeight) span.style.fontWeight = String(run.fontWeight)
+    if (run.color) span.style.color = run.color
+    span.style.textDecoration = CSS_DECORATION[run.decoration] || 'none'
     element.appendChild(span)
   }
 }
@@ -270,6 +274,8 @@ function applyNodeStyle(element, node) {
     element.style.fontWeight = String(style.fontWeight || 400)
     if (style.lineHeight > 0) element.style.lineHeight = `${style.lineHeight}px`
     if (style.letterSpacing) element.style.letterSpacing = `${style.letterSpacing}px`
+    // CSS text-decoration của cha lan xuống con và con không tắt được — có runs thì để từng <span> tự gạch.
+    if (style.textDecoration && !node.textRuns) element.style.textDecoration = CSS_DECORATION[style.textDecoration]
     element.style.textAlign = cssTextAlign(style.textAlign)
     element.style.display = '-webkit-box'
     element.style.webkitBoxOrient = 'vertical'

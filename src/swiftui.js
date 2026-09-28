@@ -229,7 +229,7 @@ function labelLines(node, ctx) {
   const { style } = node
   let textExpression = swiftString(node.text)
   // Đoạn khác weight → ghép Text + Text (iOS 13+); không đưa qua ViewModel vì chuỗi đơn không mang được kiểu từng đoạn.
-  const runsBase = node.textRuns ? textRunLines(node) : null
+  const runsBase = node.textRuns ? textRunLines(node, ctx) : null
   if (runsBase) {
     textExpression = null
   } else if (ctx.textSlots?.has(node.id)) {
@@ -245,15 +245,32 @@ function labelLines(node, ctx) {
   } else {
     lines.push(`.font(.system(size: ${formatNumber(style.fontSize)}, weight: .${swiftFontWeight(style.fontWeight)}))`)
   }
+  // kerning/underline/strikethrough là modifier của Text (iOS 13) → đặt trước các modifier View bên dưới.
+  if (style.letterSpacing) lines.push(`.kerning(${formatNumber(style.letterSpacing)})`)
+  // Có runs thì gạch được gắn theo từng đoạn (textRunLines) — gắn ở ngoài sẽ đè cả đoạn không gạch.
+  if (style.textDecoration && !runsBase) lines.push(TEXT_DECORATION[style.textDecoration])
   if (style.textColor) lines.push(`${ctx.api.foregroundStyle ? '.foregroundStyle' : '.foregroundColor'}(${color(ctx, style.textColor, `${node.outlet}Text`)})`)
   if (style.textAlign === 'center' || style.textAlign === 'right') lines.push(`.multilineTextAlignment(${style.textAlign === 'center' ? '.center' : '.trailing'})`)
   if (style.numberOfLines === 1) lines.push('.lineLimit(1)')
+  // SwiftUI chỉ cho thêm khoảng giữa các dòng: line height Figma trừ chiều cao dòng tự nhiên (~1.19 × cỡ chữ với SF Pro).
+  const spacing = Math.round((style.lineHeight - style.fontSize * 1.19) * 100) / 100
+  if (style.lineHeight > 0 && style.numberOfLines !== 1 && spacing > 0) lines.push(`.lineSpacing(${formatNumber(spacing)})`)
   return lines
 }
 
-function textRunLines(node) {
+const TEXT_DECORATION = { UNDERLINE: '.underline()', STRIKETHROUGH: '.strikethrough()' }
+
+// Modifier trên từng Text con được ưu tiên hơn modifier gắn ngoài cả biểu thức (font/màu gốc của label).
+function textRunLines(node, ctx) {
   const parts = node.textRuns.map((run, index) => {
-    const piece = `Text(${swiftString(node.text.slice(run.start, run.end))})${run.fontWeight !== node.style.fontWeight ? `.fontWeight(.${swiftFontWeight(run.fontWeight)})` : ''}`
+    const modifiers = [
+      run.fontWeight !== node.style.fontWeight ? `.fontWeight(.${swiftFontWeight(run.fontWeight)})` : '',
+      run.color && run.color !== node.style.textColor
+        ? `${ctx.api.foregroundStyle ? '.foregroundStyle' : '.foregroundColor'}(${color(ctx, run.color, `${node.outlet}Run`)})`
+        : '',
+      run.decoration ? TEXT_DECORATION[run.decoration] : ''
+    ].join('')
+    const piece = `Text(${swiftString(run.text)})${modifiers}`
     return index === 0 ? `    ${piece}` : `        + ${piece}`
   })
   return ['(', ...parts.flatMap(line => line.length > 100 ? ['    // swiftlint:disable:next line_length', line] : [line]), ')']
