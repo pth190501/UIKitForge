@@ -21,6 +21,8 @@ const screen = {
       { id: '1:7', type: 'TEXT', name: 'Promo Text', characters: 'Gói 5G giá tốt', ...box(16, 270, 358, 20),
         style: { fontFamily: 'SF Pro', fontSize: 14, fontWeight: 400, textAutoResize: 'HEIGHT' },
         characterStyleOverrides: [0, 0, 0, 0, 1, 1], styleOverrideTable: { 1: { fontWeight: 700 } } },
+      { id: '1:9', type: 'FRAME', name: 'Hot Tag', rectangleCornerRadii: [4, 4, 0, 4], fills: [{ type: 'SOLID', color: { r: 1, g: 0, b: 0, a: 1 } }], ...box(16, 330, 40, 20) },
+      { id: '1:10', type: 'FRAME', name: 'Sheet', rectangleCornerRadii: [16, 8, 0, 0], clipsContent: true, fills: [{ type: 'SOLID', color: { r: 1, g: 1, b: 1, a: 1 } }], ...box(70, 330, 100, 60) },
       { id: '1:8', type: 'TEXT', name: 'Brand', characters: 'Viettel', ...box(16, 300, 100, 20), style: { fontFamily: 'Viettel Sans', fontSize: 14, fontWeight: 400 } }
     ]
   }
@@ -52,6 +54,24 @@ assert.match(code, /UIFont\.systemFont\(ofSize: 14, weight: \.bold\)/)
 assert.match(swiftUI, /\+ Text\("5G"\)\.fontWeight\(\.bold\)/)
 assert.doesNotMatch(code + swiftUI, /starIconBackground/, 'vector đã raster không được vẽ thêm nền')
 assert.doesNotMatch(swiftUI, /\.custom\("SF Pro"/)
+
+// K5b: preview biết từng đoạn (kèm chuỗi gốc) để in đậm đúng chỗ, và tự bỏ qua khi text bị override.
+assert.deepEqual(node('promoText').textRuns.map(run => [run.text, run.fontWeight]), [['Gói ', 400], ['5G', 700], [' giá tốt', 400]])
+
+// K8: góc bo khác nhau. Cùng bán kính → maskedCorners; khác bán kính → TODO bên UIKit. SwiftUI luôn đúng nhờ shape riêng.
+assert.match(code, /hotTag\.layer\.cornerRadius = 4\n\s+hotTag\.layer\.maskedCorners = \[\.layerMinXMinYCorner, \.layerMaxXMinYCorner, \.layerMinXMaxYCorner\]/)
+assert.doesNotMatch(code, /TODO: \[hotTag\]/)
+assert.match(code, /\/\/ TODO: \[sheet\] bo góc khác bán kính \(16\/8\/0\/0\)/)
+assert.match(swiftUI, /\.background\(\n\s+CornerRadiiShape\(radii: \[4, 4, 0, 4\]\)\n\s+\.fill\(/)
+assert.match(swiftUI, /\.clipShape\(CornerRadiiShape\(radii: \[16, 8, 0, 0\]\)\)/)
+assert.equal(swiftUI.match(/private struct CornerRadiiShape: Shape/g).length, 1)
+assert.ok(!compiled.swiftUIFiles.some(file => !file.content.includes('CornerRadiiShape(') && file.content.includes('struct CornerRadiiShape')))
+assert.deepEqual(node('hotTag').style.cornerRadii, [4, 4, 0, 4])
+for (const source of [code, swiftUI]) {
+  source.split('\n').forEach((line, index, lines) => {
+    assert.ok(line.length <= 120 || /swiftlint:disable:next line_length/.test(lines[index - 1]), `line too long: ${line}`)
+  })
+}
 
 // K3: chỗ xấp xỉ/chưa hỗ trợ có "// TODO:" ngay tại code + TODO.md; SwiftLint không bắt rule `todo`.
 for (const source of [code, swiftUI]) {

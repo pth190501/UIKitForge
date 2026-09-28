@@ -165,6 +165,7 @@ function gradientLines(node, targetRef, hint, colorRegistry) {
   ]
   if (gradient.type === 'radial') lines.push(`        ${name}.gradient.type = .radial`)
   if (radius > 0) lines.push(`        ${name}.layer.cornerRadius = ${formatNumber(radius)}`)
+  if (radius > 0 && node.style.cornerRadii) lines.push(...maskedCornersLines(`${name}.`, node.style.cornerRadii))
   lines.push(`        ${name}.install(in: ${targetRef === 'self' ? 'self' : targetRef})`)
   return lines
 }
@@ -328,8 +329,10 @@ export function todosOf(node, parentNode = null, rasterized = false) {
   if (unsupported.length) todos.push(`effect ${unsupported.join(', ')} chưa được sinh code.`)
   if (effects.filter(item => item.type === 'DROP_SHADOW').length > 1) todos.push('nhiều drop shadow; code chỉ giữ shadow đầu tiên.')
   if (node.blendMode && !['NORMAL', 'PASS_THROUGH'].includes(node.blendMode)) todos.push(`blend mode ${node.blendMode.toLowerCase()} chưa hỗ trợ.`)
-  if (Array.isArray(node.rectangleCornerRadii) && new Set(node.rectangleCornerRadii).size > 1) {
-    todos.push(`bo góc khác nhau (${node.rectangleCornerRadii.join('/')}); đang dùng góc lớn nhất cho cả 4 góc.`)
+  // maskedCorners chỉ bật/tắt góc với cùng một bán kính; bán kính khác nhau thật sự thì UIKit cần mask path riêng.
+  const radii = mixedCornerRadii(node)
+  if (radii && new Set(radii.filter(value => value > 0)).size > 1) {
+    todos.push(`bo góc khác bán kính (${radii.join('/')}); UIKit đang dùng góc lớn nhất (SwiftUI đã vẽ đúng).`)
   }
   if (!rasterized && isAutoLayout(node)) {
     if (node.layoutWrap === 'WRAP') todos.push('Auto Layout wrap; UIStackView không xuống dòng — cân nhắc UICollectionView.')
@@ -399,7 +402,9 @@ export function textRunsOf(node) {
     if (last && last.fontWeight === weight) last.end = index + 1
     else runs.push({ start: index, end: index + 1, fontWeight: weight })
   }
-  return runs.some(run => run.fontWeight !== baseWeight) ? runs : null
+  if (!runs.some(run => run.fontWeight !== baseWeight)) return null
+  // Giữ chuỗi gốc của từng đoạn để nơi dùng nhận ra text đã bị override (offset không còn đúng).
+  return runs.map(run => ({ ...run, text: text.slice(run.start, run.end) }))
 }
 
 function hugToFixed(sizing) {
@@ -438,14 +443,20 @@ function fallbackBounds(node) {
   return { x: 0, y: 0, width: box.x || 1, height: box.y || 1 }
 }
 
+export function mixedCornerRadii(node) {
+  const radii = Array.isArray(node.rectangleCornerRadii) ? node.rectangleCornerRadii.map(value => round(value || 0)) : null
+  return radii?.length === 4 && new Set(radii).size > 1 ? radii : null
+}
+
 function extractStyle(node) {
   const fill = firstVisibleSolidPaint(node.fills || [])
   const stroke = firstVisibleSolidPaint(node.strokes || [])
   const effect = (node.effects || []).find(item => item?.visible !== false && item?.type === 'DROP_SHADOW')
   const textStyle = node.style || {}
-  const radius = Number.isFinite(node.cornerRadius)
-    ? node.cornerRadius
-    : Array.isArray(node.rectangleCornerRadii) ? Math.max(...node.rectangleCornerRadii) : 0
+  const mixedRadii = mixedCornerRadii(node)
+  const radius = mixedRadii ? Math.max(...mixedRadii)
+    : Number.isFinite(node.cornerRadius) ? node.cornerRadius
+      : Array.isArray(node.rectangleCornerRadii) ? Math.max(...node.rectangleCornerRadii) : 0
 
   return {
     // Với TEXT, `fills` của Figma là màu chữ (glyph), không phải nền — lấy làm backgroundColor sẽ ra khối đặc cùng màu chữ.
@@ -454,6 +465,8 @@ function extractStyle(node) {
     borderColor: paintToRgba(stroke),
     borderWidth: round(node.strokeWeight || 0),
     radius: round(radius || 0),
+    // Chỉ giữ khi 4 góc khác nhau (thứ tự Figma: trên-trái, trên-phải, dưới-phải, dưới-trái); góc đều thì radius là đủ.
+    cornerRadii: mixedRadii,
     opacity: node.opacity == null ? 1 : node.opacity,
     fontSize: round(textStyle.fontSize || 14),
     fontFamily: textStyle.fontFamily || 'System',
@@ -675,6 +688,7 @@ function generateSwiftStyleLines(root, { includeStatic = false, rootRef = 'conte
     if (includeStatic && style.background) lines.push(`        ${target}backgroundColor = ${namedColor(colorRegistry, style.background, `${hint}Background`)}`)
     if (style.radius > 0) {
       lines.push(`        ${target}layer.cornerRadius = ${formatNumber(style.radius)}`)
+      if (style.cornerRadii) lines.push(...maskedCornersLines(target, style.cornerRadii))
       // cornerRadius đã bo cả nền/viền mà không cần clip; chỉ clip khi Figma bật clipsContent (hoặc ảnh cần bo),
       // nếu không phần tử tràn góc (nhãn "Hot") sẽ bị cắt như trong preview trước đây.
       if (style.clipsContent || node.kind === 'image') lines.push(`        ${target}layer.masksToBounds = true`)
@@ -735,6 +749,18 @@ function allowLongLiteralLines(lines) {
 
 // Figma ghi font hệ thống Apple bằng tên hiển thị ("SF Pro Display/Text", "SF Compact") — không phải tên
 // đăng ký trên iOS, nên UIFont(name:) luôn nil và còn bỏ qua weight. Coi là font hệ thống.
+const CA_CORNERS = ['.layerMinXMinYCorner', '.layerMaxXMinYCorner', '.layerMaxXMaxYCorner', '.layerMinXMaxYCorner']
+
+// Góc bằng 0 trong Figma → tắt góc đó bằng maskedCorners (iOS 11+), không cần mask layer/bezier path.
+function maskedCornersLines(target, radii) {
+  const corners = CA_CORNERS.filter((_, index) => radii[index] > 0)
+  if (corners.length === 4) return []
+  const single = `        ${target}layer.maskedCorners = [${corners.join(', ')}]`
+  if (single.length <= 120) return [single]
+  const items = corners.map((corner, index) => `            ${corner}${index < corners.length - 1 ? ',' : ''}`)
+  return [`        ${target}layer.maskedCorners = [`, ...items, '        ]']
+}
+
 // Tách comment dài thành nhiều dòng để không vượt line_length 120 của SwiftLint (comment cũng bị tính).
 export function todoCommentLines(node, indent, width = 110) {
   return (node.todos || []).flatMap(todo => {

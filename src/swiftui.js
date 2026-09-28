@@ -25,8 +25,37 @@ export function generateSwiftUIFiles({ rootClass, mainIR, componentIRs = [], dep
 }
 
 function swiftFile(path, content, kind) {
-  return { path, name: path.split('/').pop(), language: 'swift', content: wrapLongComments(content), kind, target: 'swiftui' }
+  const withHelpers = content.includes('CornerRadiiShape(') ? `${content}${CORNER_RADII_SHAPE}` : content
+  return { path, name: path.split('/').pop(), language: 'swift', content: wrapLongComments(withHelpers), kind, target: 'swiftui' }
 }
+
+// private (fileprivate ở top level) → mỗi file tự mang helper mà không trùng khai báo khi build chung target.
+// addArc(tangent1End:tangent2End:) với radius 0 vẽ thẳng tới góc, nên góc vuông không cần xử lý riêng.
+const CORNER_RADII_SHAPE = `
+private struct CornerRadiiShape: Shape {
+    /// Thứ tự như Figma: trên-trái, trên-phải, dưới-phải, dưới-trái.
+    let radii: [CGFloat]
+
+    func path(in rect: CGRect) -> Path {
+        let limit = min(rect.width, rect.height) / 2
+        let corners = [
+            CGPoint(x: rect.minX, y: rect.minY),
+            CGPoint(x: rect.maxX, y: rect.minY),
+            CGPoint(x: rect.maxX, y: rect.maxY),
+            CGPoint(x: rect.minX, y: rect.maxY)
+        ]
+        var path = Path()
+        path.move(to: CGPoint(x: rect.minX + min(radii[0], limit), y: rect.minY))
+        for index in 1...4 {
+            let corner = index % 4
+            let radius = min(radii[corner], limit)
+            path.addArc(tangent1End: corners[corner], tangent2End: corners[(corner + 1) % 4], radius: radius)
+        }
+        path.closeSubpath()
+        return path
+    }
+}
+`
 
 // Comment TODO được thụt lề theo độ sâu view nên chỉ biết độ dài thật ở bước cuối — tách lại ở đây cho line_length 120.
 function wrapLongComments(content, width = 120) {
@@ -305,6 +334,12 @@ function pinnedAxis(start, end, center, size) {
   return { align: 'start', start: start?.constant || 0, size: fixedSize }
 }
 
+// Góc khác nhau → CornerRadiiShape tự vẽ (UnevenRoundedRectangle chỉ có từ iOS 17, export còn hỗ trợ iOS 13).
+function shapeExpression(style) {
+  if (style.cornerRadii) return `CornerRadiiShape(radii: [${style.cornerRadii.map(formatNumber).join(', ')}])`
+  return `RoundedRectangle(cornerRadius: ${formatNumber(style.radius || 0)})`
+}
+
 function styleModifiers(node, includeShape, ctx) {
   const { style } = node
   const hint = node.outlet || 'root'
@@ -314,16 +349,17 @@ function styleModifiers(node, includeShape, ctx) {
   // Chỉ clip khi Figma bật clipsContent (hoặc ảnh cần bo): bo góc nền bằng RoundedRectangle.fill thì phần tử tràn
   // góc (nhãn "Hot") không bị cắt — .clipShape sẽ cắt luôn cả overlay.
   const clips = style.clipsContent || node.kind === 'image'
+  const shape = shapeExpression(style)
   if (fill && includeShape && style.radius > 0 && !clips) {
-    lines.push('.background(', `    RoundedRectangle(cornerRadius: ${formatNumber(style.radius)})`, '        .fill(', ...indent(fill, 3), '        )', ')')
+    lines.push('.background(', `    ${shape}`, '        .fill(', ...indent(fill, 3), '        )', ')')
   } else if (fill) {
     lines.push(...(fill.length === 1 ? [`.background(${fill[0]})`] : ['.background(', ...indent(fill, 1), ')']))
   }
-  if (includeShape && style.radius > 0 && clips) lines.push(`.clipShape(RoundedRectangle(cornerRadius: ${formatNumber(style.radius)}))`)
+  if (includeShape && style.radius > 0 && clips) lines.push(`.clipShape(${shape})`)
   if (includeShape && style.borderColor && style.borderWidth > 0) {
     lines.push(
       '.overlay(',
-      `    RoundedRectangle(cornerRadius: ${formatNumber(style.radius || 0)})`,
+      `    ${shape}`,
       `        .stroke(${color(ctx, style.borderColor, `${hint}Border`)}, lineWidth: ${formatNumber(style.borderWidth)})`,
       ')'
     )

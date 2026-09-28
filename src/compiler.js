@@ -1,4 +1,4 @@
-import { collectTodoItems, compileUIKit as compileCore, sanitizeOutletName, todoMarkdown } from './compiler-core.js'
+import { collectTodoItems, compileUIKit as compileCore, sanitizeOutletName, textRunsOf, todoMarkdown } from './compiler-core.js'
 import { figmaPaintToCss, firstVisiblePaint, isRasterCandidate } from './figma.js'
 import { applySwiftPreview } from './preview.js'
 import { generateSwiftUIFiles } from './swiftui.js'
@@ -197,6 +197,7 @@ function rawToPreview(node, parent, imageMap) {
     frame,
     constraints: inferConstraints(node, parent, frame),
     text: node.type === 'TEXT' ? String(node.characters || '') : '',
+    textRuns: node.type === 'TEXT' ? textRunsOf(node) : null,
     style: extractStyle(node, imageMap),
     layout: extractLayout(node),
     meta: {

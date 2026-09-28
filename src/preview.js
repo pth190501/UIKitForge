@@ -195,7 +195,7 @@ function renderNode(node, isRoot, selectedId, onSelect, parentStack = null) {
   if (node.hidden) element.style.display = 'none'
 
   if (node.kind === 'label') {
-    element.textContent = node.text || ''
+    renderLabelText(element, node)
   } else if (node.kind === 'image' && !node.style?.imageUrl) {
     const badge = document.createElement('span')
     badge.className = 'image-placeholder'
@@ -222,6 +222,23 @@ function renderNode(node, isRoot, selectedId, onSelect, parentStack = null) {
   return element
 }
 
+// Đoạn khác weight (giống NSAttributedString / Text + Text đã sinh) → <span> riêng. Chỉ dùng khi các đoạn ghép lại
+// đúng bằng text hiện tại: instance override đổi text thì offset cũ vô nghĩa, quay về text thường.
+function renderLabelText(element, node) {
+  const text = node.text || ''
+  const runs = node.textRuns
+  if (!runs?.length || runs.map(run => run.text).join('') !== text) {
+    element.textContent = text
+    return
+  }
+  for (const run of runs) {
+    const span = document.createElement('span')
+    span.textContent = run.text
+    if (run.fontWeight !== node.style?.fontWeight) span.style.fontWeight = String(run.fontWeight)
+    element.appendChild(span)
+  }
+}
+
 function applyNodeStyle(element, node) {
   const style = node.style || {}
   element.style.opacity = style.opacity == null ? '1' : String(style.opacity)
@@ -234,7 +251,9 @@ function applyNodeStyle(element, node) {
     element.style.backgroundSize = imageScaleMode(style.imageScaleMode)
   }
 
-  if (style.radius) element.style.borderRadius = `${style.radius}px`
+  // CSS border-radius 4 giá trị cùng thứ tự với Figma rectangleCornerRadii (trên-trái → dưới-trái theo chiều kim đồng hồ).
+  if (style.cornerRadii?.length === 4) element.style.borderRadius = style.cornerRadii.map(value => `${value}px`).join(' ')
+  else if (style.radius) element.style.borderRadius = `${style.radius}px`
   if (style.borderColor && style.borderWidth) element.style.border = `${style.borderWidth}px solid ${style.borderColor}`
   // Bo góc không đồng nghĩa với clip (UIKit/Figma đều vậy) — chỉ cắt khi clipsContent, còn ảnh thì cần bo theo góc.
   if (style.clipsContent || (style.radius && node.kind === 'image')) element.style.overflow = 'hidden'
