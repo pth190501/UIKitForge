@@ -133,40 +133,41 @@ function annotateInstanceOverrides(root, rawById, slotsByClass) {
 }
 
 // Đoạn khác weight → NSAttributedString; phần còn lại không gắn .font nên UILabel dùng font/màu của chính label.
+// Bọc `do { }` để biến cục bộ tên cố định: không trùng giữa các label, không vượt identifier_name (40 ký tự)
+// như khi ghép outlet dài + hậu tố.
 function attributedTextLines(node, targetRef) {
-  const name = `${node.outlet}Attributed`
-  const lines = [`        let ${name} = NSMutableAttributedString(string: ${swiftString(node.text)})`]
+  const lines = ['        do {', `            let attributed = NSMutableAttributedString(string: ${swiftString(node.text)})`]
   const baseWeight = node.style.fontWeight
   for (const run of node.textRuns.filter(item => item.fontWeight !== baseWeight)) {
     lines.push(
-      `        ${name}.addAttribute(`,
-      '            .font,',
-      `            value: ${swiftFontExpression({ ...node.style, fontWeight: run.fontWeight }).replace(/\n\s*/, '')},`,
-      `            range: NSRange(location: ${run.start}, length: ${run.end - run.start})`,
-      '        )'
+      '            attributed.addAttribute(',
+      '                .font,',
+      `                value: ${swiftFontExpression({ ...node.style, fontWeight: run.fontWeight }).replace(/\n\s*/, '')},`,
+      `                range: NSRange(location: ${run.start}, length: ${run.end - run.start})`,
+      '            )'
     )
   }
-  lines.push(`        ${targetRef === 'self' ? '' : `${targetRef}.`}attributedText = ${name}`)
+  lines.push(`            ${targetRef === 'self' ? '' : `${targetRef}.`}attributedText = attributed`, '        }')
   return lines
 }
 
 function gradientLines(node, targetRef, hint, colorRegistry) {
   const { gradient, radius } = node.style
-  const name = `${hint}Gradient`
-  const colors = gradient.stops.map((stop, index) => `            ${namedColor(colorRegistry, stop.rgba, `${hint}Gradient`)}${index < gradient.stops.length - 1 ? ',' : ''}`)
+  const colors = gradient.stops.map((stop, index) => `                ${namedColor(colorRegistry, stop.rgba, `${hint}Gradient`)}${index < gradient.stops.length - 1 ? ',' : ''}`)
   const lines = [
-    `        let ${name} = GradientLayerView()`,
-    `        ${name}.gradient.colors = [`,
+    '        do {',
+    '            let gradientView = GradientLayerView()',
+    '            gradientView.gradient.colors = [',
     ...colors,
-    '        ].compactMap { $0?.cgColor }',
-    `        ${name}.gradient.locations = [${gradient.stops.map(stop => formatNumber(stop.position)).join(', ')}]`,
-    `        ${name}.gradient.startPoint = CGPoint(x: ${formatNumber(gradient.start.x)}, y: ${formatNumber(gradient.start.y)})`,
-    `        ${name}.gradient.endPoint = CGPoint(x: ${formatNumber(gradient.end.x)}, y: ${formatNumber(gradient.end.y)})`
+    '            ].compactMap { $0?.cgColor }',
+    `            gradientView.gradient.locations = [${gradient.stops.map(stop => formatNumber(stop.position)).join(', ')}]`,
+    `            gradientView.gradient.startPoint = CGPoint(x: ${formatNumber(gradient.start.x)}, y: ${formatNumber(gradient.start.y)})`,
+    `            gradientView.gradient.endPoint = CGPoint(x: ${formatNumber(gradient.end.x)}, y: ${formatNumber(gradient.end.y)})`
   ]
-  if (gradient.type === 'radial') lines.push(`        ${name}.gradient.type = .radial`)
-  if (radius > 0) lines.push(`        ${name}.layer.cornerRadius = ${formatNumber(radius)}`)
-  if (radius > 0 && node.style.cornerRadii) lines.push(...maskedCornersLines(`${name}.`, node.style.cornerRadii))
-  lines.push(`        ${name}.install(in: ${targetRef === 'self' ? 'self' : targetRef})`)
+  if (gradient.type === 'radial') lines.push('            gradientView.gradient.type = .radial')
+  if (radius > 0) lines.push(`            gradientView.layer.cornerRadius = ${formatNumber(radius)}`)
+  if (radius > 0 && node.style.cornerRadii) lines.push(...maskedCornersLines('gradientView.', node.style.cornerRadii, '            '))
+  lines.push(`            gradientView.install(in: ${targetRef === 'self' ? 'self' : targetRef})`, '        }')
   return lines
 }
 
@@ -174,7 +175,7 @@ function gradientLines(node, targetRef, hint, colorRegistry) {
 // `private` ở phạm vi file → mỗi file Swift sinh ra tự chứa, không trùng tên giữa các file.
 const GRADIENT_HELPER = `
 private final class GradientLayerView: UIView {
-    override class var layerClass: AnyClass { CAGradientLayer.self }
+    override static var layerClass: AnyClass { CAGradientLayer.self }
 
     var gradient: CAGradientLayer {
         (layer as? CAGradientLayer) ?? CAGradientLayer()
@@ -196,7 +197,36 @@ private final class GradientLayerView: UIView {
 `
 
 function withGradientHelper(swift) {
-  return swift.includes('GradientLayerView()') ? `${swift}${GRADIENT_HELPER}` : swift
+  return withLengthGuards(swift.includes('GradientLayerView()') ? `${swift}${GRADIENT_HELPER}` : swift)
+}
+
+// Màn hình lớn (vd "Bán gói ngày") sinh file/hàm dài vượt ngưỡng mặc định của SwiftLint (warning: hàm 50, type 250,
+// file 400 dòng; --strict coi warning là lỗi). Code sinh ra không nên bị tách tay, nên chỉ tắt đúng rule tại đúng chỗ
+// vượt ngưỡng. Phải đếm chính xác như SwiftLint (bỏ dòng trống/comment) vì disable thừa lại bị superfluous_disable_command.
+const LENGTH_LIMITS = { function: 50, type: 250, file: 400 }
+
+function withLengthGuards(swift) {
+  const lines = swift.split('\n')
+  const bodyLength = (start, indent) => {
+    let count = 0
+    for (let index = start + 1; index < lines.length; index++) {
+      if (lines[index] === `${indent}}`) return count
+      const trimmed = lines[index].trim()
+      if (trimmed && !trimmed.startsWith('//')) count++
+    }
+    return count
+  }
+  const out = []
+  lines.forEach((line, index) => {
+    const func = line.match(/^(\s*)(?:(?:private|fileprivate|override|static|final|@objc)\s+)*func\s.*\{$/)
+    const type = line.match(/^(\s*)(?:(?:private|fileprivate|final)\s+)*(?:class|struct|enum)\s.*\{$/)
+    if (func && bodyLength(index, func[1]) > LENGTH_LIMITS.function) out.push(`${func[1]}// swiftlint:disable:next function_body_length`)
+    if (type && bodyLength(index, type[1]) > LENGTH_LIMITS.type) out.push(`${type[1]}// swiftlint:disable:next type_body_length`)
+    out.push(line)
+  })
+  const lineCount = swift.endsWith('\n') ? out.length - 1 : out.length
+  // file_length được phép disable toàn file (nằm trong allowed_rules mặc định của blanket_disable_command).
+  return lineCount > LENGTH_LIMITS.file ? `// swiftlint:disable file_length\n${out.join('\n')}` : out.join('\n')
 }
 
 // Thêm `struct Content` + `configure(with:)` vào class component. Dùng struct thay vì nhiều tham số để không
@@ -752,13 +782,13 @@ function allowLongLiteralLines(lines) {
 const CA_CORNERS = ['.layerMinXMinYCorner', '.layerMaxXMinYCorner', '.layerMaxXMaxYCorner', '.layerMinXMaxYCorner']
 
 // Góc bằng 0 trong Figma → tắt góc đó bằng maskedCorners (iOS 11+), không cần mask layer/bezier path.
-function maskedCornersLines(target, radii) {
+function maskedCornersLines(target, radii, pad = '        ') {
   const corners = CA_CORNERS.filter((_, index) => radii[index] > 0)
   if (corners.length === 4) return []
-  const single = `        ${target}layer.maskedCorners = [${corners.join(', ')}]`
+  const single = `${pad}${target}layer.maskedCorners = [${corners.join(', ')}]`
   if (single.length <= 120) return [single]
-  const items = corners.map((corner, index) => `            ${corner}${index < corners.length - 1 ? ',' : ''}`)
-  return [`        ${target}layer.maskedCorners = [`, ...items, '        ]']
+  const items = corners.map((corner, index) => `${pad}    ${corner}${index < corners.length - 1 ? ',' : ''}`)
+  return [`${pad}${target}layer.maskedCorners = [`, ...items, `${pad}]`]
 }
 
 // Tách comment dài thành nhiều dòng để không vượt line_length 120 của SwiftLint (comment cũng bị tính).

@@ -2,7 +2,7 @@ import assert from 'node:assert/strict'
 import { compileUIKit } from '../src/compiler.js'
 import { isRasterCandidate } from '../src/figma.js'
 import { LINT_CONFIG_FILES } from '../src/lint-config.js'
-import { banGoiNgayScreen } from './fixtures.mjs'
+import { banGoiNgayScreen, layoutScreen } from './fixtures.mjs'
 
 // Node "khó" kiểu màn 34715:42593: icon vector, nền gradient, text đậm một đoạn, bo góc có/không clip, effect lạ.
 const box = (x, y, width, height) => ({ absoluteBoundingBox: { x, y, width, height } })
@@ -39,8 +39,9 @@ assert.ok(isRasterCandidate(screen.root.children[0]))
 assert.equal(node('starIcon').kind, 'image')
 assert.ok(node('starIcon').meta.rasterized)
 assert.match(code, /starIcon\.image = UIImage\(named: "starIcon"\)/)
-assert.match(code, /let heroGradient = GradientLayerView\(\)/)
-assert.match(code, /heroGradient\.gradient\.startPoint = CGPoint\(x: 0, y: 0\.5\)/)
+assert.match(code, /do \{\n\s+let gradientView = GradientLayerView\(\)/)
+assert.match(code, /gradientView\.gradient\.startPoint = CGPoint\(x: 0, y: 0\.5\)\n[\s\S]*?gradientView\.install\(in: hero\)/)
+assert.match(code, /override static var layerClass/)
 assert.match(code, /final class GradientLayerView: UIView/)
 assert.match(swiftUI, /LinearGradient\(/)
 assert.match(swiftUI, /RadialGradient\(/)
@@ -93,6 +94,21 @@ const xibs = compileUIKit(banGoiNgayScreen, 'GeneratedView', { deploymentTarget:
 assert.ok(xibs.length > 1)
 // eslint-disable-next-line no-control-regex
 for (const file of xibs) assert.doesNotMatch(file.content, /[\u0000-\u0008\u000B\u000C\u000E-\u001F]/, `${file.path} has XML-invalid characters`)
+
+// SwiftLint --strict trên màn lớn: tên biến ≤ 40 ký tự, và chỉ tắt length rule đúng chỗ vượt ngưỡng (số dòng đã đối
+// chiếu với SwiftLint thật trên CI: configureList 240, applyGeneratedStyle 143, class 496, file 534).
+const ban = compileUIKit(banGoiNgayScreen, 'GeneratedView', { deploymentTarget: 17 })
+for (const file of [...ban.files, ...ban.swiftUIFiles].filter(item => item.language === 'swift')) {
+  for (const [, name] of file.content.matchAll(/\b(?:let|var) (\w+)/g)) assert.ok(name.length <= 40, `${file.path}: ${name} exceeds identifier_name`)
+}
+const banCode = ban.files.find(file => file.path === 'UIKit-Code/GeneratedView/GeneratedView.swift').content
+assert.ok(banCode.startsWith('// swiftlint:disable file_length\n'))
+assert.match(banCode, /\/\/ swiftlint:disable:next type_body_length\nfinal class GeneratedView: UIView \{/)
+assert.match(banCode, /\/\/ swiftlint:disable:next function_body_length\n\s+private func configureList\(\) \{/)
+assert.match(banCode, /\/\/ swiftlint:disable:next function_body_length\n\s+private func applyGeneratedStyle\(\) \{/)
+assert.doesNotMatch(banCode, /disable:next function_body_length\n\s+private func commonInit\(\)/, 'hàm ngắn không được disable (superfluous_disable_command)')
+const small = compileUIKit(layoutScreen, 'GeneratedView', { deploymentTarget: 17 }).files.filter(file => file.language === 'swift')
+for (const file of small) assert.doesNotMatch(file.content, /swiftlint:disable(:next)? (file_length|type_body_length|function_body_length)/, file.path)
 
 // Màn không có gì cần sửa tay thì không sinh TODO.md rỗng.
 const plain = compileUIKit({ root: { id: '9:1', type: 'FRAME', name: 'Plain', ...box(0, 0, 100, 100), children: [] } }, 'PlainView', { deploymentTarget: 13 })
