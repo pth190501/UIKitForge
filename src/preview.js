@@ -1,3 +1,8 @@
+import { arrangedChildStyle, isArrangedChild, resolveStack, sizingOf, stackContainerStyle } from './preview-layout.js'
+
+// Element → node đã render, để đo lại layout thật (flexbox) cho pixel-diff mà không phụ thuộc id (component lặp lại dùng chung id).
+const renderedNodes = new WeakMap()
+
 export function clonePreviewTree(root) {
   return typeof structuredClone === 'function'
     ? structuredClone(root)
@@ -114,6 +119,9 @@ export function renderUIKitPreview(container, root, options = {}) {
   stage.style.transformOrigin = 'top left'
 
   const uiRoot = renderNode(root, true, selectedId, onSelect)
+  // Root HUG theo chiều dọc (vd card) co giãn theo nội dung như UIView tự co bằng Auto Layout — không khoá cao theo Figma.
+  const hugsHeight = sizingOf(root).v === 'HUG' && Boolean(resolveStack(root))
+  if (hugsHeight) uiRoot.style.height = 'auto'
   stage.appendChild(uiRoot)
 
   if (showSafeArea && phoneLike) {
@@ -141,10 +149,15 @@ export function renderUIKitPreview(container, root, options = {}) {
 
   viewport.appendChild(board)
   container.appendChild(viewport)
+  if (hugsHeight) {
+    const contentHeight = Math.max(1, uiRoot.offsetHeight)
+    stage.style.height = `${contentHeight}px`
+    stageShell.style.height = `${contentHeight * scale}px`
+  }
   onMetrics?.({ scale, fitScale, rootWidth, rootHeight, phoneLike })
 }
 
-function renderNode(node, isRoot, selectedId, onSelect) {
+function renderNode(node, isRoot, selectedId, onSelect, parentStack = null) {
   const element = document.createElement('div')
   element.className = `uikit-node uikit-${node.kind || 'view'}`
   element.dataset.nodeId = node.id || ''
@@ -153,13 +166,13 @@ function renderNode(node, isRoot, selectedId, onSelect) {
   element.dataset.nodeName = node.name || ''
   element.title = `${node.name || 'View'}${node.outlet ? ` · ${node.outlet}` : ''}`
 
-  if (node.hidden) element.style.display = 'none'
-
   if (isRoot) {
     element.style.left = '0px'
     element.style.top = '0px'
     element.style.width = '100%'
     element.style.height = '100%'
+  } else if (parentStack && isArrangedChild(node)) {
+    Object.assign(element.style, arrangedChildStyle(node, parentStack))
   } else {
     const frame = node.frame || {}
     element.style.left = `${frame.x || 0}px`
@@ -169,6 +182,12 @@ function renderNode(node, isRoot, selectedId, onSelect) {
   }
 
   applyNodeStyle(element, node)
+  renderedNodes.set(element, node)
+
+  const stack = node.kind === 'label' ? null : resolveStack(node)
+  if (stack) Object.assign(element.style, stackContainerStyle(stack))
+  // Đặt sau cùng: style label (-webkit-box) và stack (flex) đều ghi đè `display`. Ẩn cũng rút khỏi luồng flex như UIStackView.
+  if (node.hidden) element.style.display = 'none'
 
   if (node.kind === 'label') {
     element.textContent = node.text || ''
@@ -192,7 +211,7 @@ function renderNode(node, isRoot, selectedId, onSelect) {
 
   const visualChildren = node.children?.length ? node.children : (node.previewChildren || [])
   for (const child of visualChildren) {
-    element.appendChild(renderNode(child, false, selectedId, onSelect))
+    element.appendChild(renderNode(child, false, selectedId, onSelect, stack))
   }
 
   return element
@@ -239,24 +258,48 @@ function applyNodeStyle(element, node) {
 // Raster hoá preview tree lên canvas ngoài màn hình để so pixel với ảnh tham chiếu (xem pixel-diff.js).
 // Cố ý không dùng html2canvas (tránh thêm dependency): tự vẽ rect/radius/text xấp xỉ từ cùng style
 // engine với renderNode, đủ để so khớp bố cục/màu sắc dù không render font hệt hệ điều hành.
-export function rasterizePreviewToCanvas(root, width, height) {
+// Đo vị trí thật (sau flexbox) của mọi node đang hiển thị, theo toạ độ chưa scale của stage.
+// Trả về WeakMap node → rect; null nếu preview chưa render.
+export function measurePreviewLayout(container) {
+  const stage = container?.querySelector('.preview-stage')
+  if (!stage) return null
+  const stageRect = stage.getBoundingClientRect()
+  const scale = stage.offsetWidth ? stageRect.width / stage.offsetWidth : 1
+  const rects = new WeakMap()
+  for (const element of stage.querySelectorAll('.uikit-node')) {
+    const node = renderedNodes.get(element)
+    if (!node) continue
+    const rect = element.getBoundingClientRect()
+    rects.set(node, {
+      x: (rect.left - stageRect.left) / scale,
+      y: (rect.top - stageRect.top) / scale,
+      width: rect.width / scale,
+      height: rect.height / scale
+    })
+  }
+  return rects
+}
+
+// layout (tuỳ chọn): kết quả measurePreviewLayout — có thì vẽ đúng vị trí flexbox, không thì dùng frame Figma.
+export function rasterizePreviewToCanvas(root, width, height, layout = null) {
   const canvas = document.createElement('canvas')
   canvas.width = Math.max(1, Math.round(width))
   canvas.height = Math.max(1, Math.round(height))
   const ctx = canvas.getContext('2d')
   if (!ctx) return canvas
   ctx.clearRect(0, 0, canvas.width, canvas.height)
-  drawNodeToCanvas(ctx, root, 0, 0, true)
+  drawNodeToCanvas(ctx, root, 0, 0, true, layout)
   return canvas
 }
 
-function drawNodeToCanvas(ctx, node, offsetX, offsetY, isRoot) {
+function drawNodeToCanvas(ctx, node, offsetX, offsetY, isRoot, layout) {
   if (node.hidden) return
   const frame = node.frame || {}
-  const x = isRoot ? 0 : offsetX + (frame.x || 0)
-  const y = isRoot ? 0 : offsetY + (frame.y || 0)
-  const w = Math.max(0, frame.width || ctx.canvas.width)
-  const h = Math.max(0, frame.height || ctx.canvas.height)
+  const measured = layout?.get(node)
+  const x = measured ? measured.x : isRoot ? 0 : offsetX + (frame.x || 0)
+  const y = measured ? measured.y : isRoot ? 0 : offsetY + (frame.y || 0)
+  const w = Math.max(0, measured ? measured.width : frame.width || ctx.canvas.width)
+  const h = Math.max(0, measured ? measured.height : frame.height || ctx.canvas.height)
   const style = node.style || {}
 
   ctx.save()
@@ -290,7 +333,7 @@ function drawNodeToCanvas(ctx, node, offsetX, offsetY, isRoot) {
   }
 
   const children = node.children?.length ? node.children : (node.previewChildren || [])
-  for (const child of children) drawNodeToCanvas(ctx, child, x, y, false)
+  for (const child of children) drawNodeToCanvas(ctx, child, x, y, false, layout)
 }
 
 function roundedRectPath(ctx, x, y, w, h, radius) {

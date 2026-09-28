@@ -18,6 +18,7 @@ UIKitForge is an experimental web IDE that reads a Figma node using a user-provi
 - Generates `IBOutlet` declarations and XIB outlet connections.
 - Infers Auto Layout rules from Figma constraints (`LEFT`, `RIGHT`, `LEFT_RIGHT`, `CENTER`, `TOP`, `BOTTOM`, `TOP_BOTTOM`).
 - Browser preview for frames, text, fills, radius, borders, shadows, opacity and component boundaries.
+- Preview follows Auto Layout like the generated `UIStackView`s: stacks lay out with flexbox, HUG views size to their content, FILL views take the remaining space, FIXED views keep the Figma size, and editing text in the Swift editor reflows siblings.
 - Live Swift preview for main views and generated components, including updates reflected inside the parent hierarchy.
 - Live Swift preview recognizes common assignments such as:
   - `backgroundColor`

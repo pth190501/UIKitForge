@@ -4,7 +4,7 @@ import './image-mode.css'
 import { fetchFigmaSelection, parseFigmaUrl, summarizeFigmaTree } from './figma.js'
 import { compileUIKit } from './compiler.js'
 import { analyzeScreenshot } from './screenshot.js'
-import { applySwiftPreview, describeNode, rasterizePreviewToCanvas, renderUIKitPreview, walkPreview } from './preview.js'
+import { applySwiftPreview, describeNode, measurePreviewLayout, rasterizePreviewToCanvas, renderUIKitPreview, walkPreview } from './preview.js'
 import { diffImageData, diffSeverity } from './pixel-diff.js'
 import { rerootSharedMVVMFile } from './export-layout.js'
 
@@ -449,13 +449,15 @@ let diffRunToken = 0
 async function updatePixelDiff(root) {
   if (!state.referenceImage) { refs.diffMatchValue.hidden = true; return }
   const token = ++diffRunToken
+  // Đo ngay (đồng bộ) sau render, trước await — preview có thể render lại trong lúc chờ ảnh tải.
+  const layout = measurePreviewLayout(refs.previewCanvas)
   try {
     const image = await loadImageElement(state.referenceImage)
     const width = root.frame?.width || image.naturalWidth
     const height = root.frame?.height || image.naturalHeight
     if (!width || !height) return
 
-    const previewCanvas = rasterizePreviewToCanvas(root, width, height)
+    const previewCanvas = rasterizePreviewToCanvas(root, width, height, layout)
     const referenceCanvas = document.createElement('canvas')
     referenceCanvas.width = previewCanvas.width
     referenceCanvas.height = previewCanvas.height
@@ -683,7 +685,7 @@ function createDemoFigmaData() {
   return { name: 'UIKitForge Demo', components: {}, componentSets: {}, styles: {}, imageMap: {}, root: { id: '1:1', type: 'FRAME', name: 'Fast Data Card', layoutMode: 'VERTICAL', itemSpacing: 12, paddingLeft: 20, paddingRight: 20, paddingTop: 20, paddingBottom: 20, absoluteBoundingBox: { x: 0, y: 0, width: 390, height: 314 }, fills: [{ type: 'SOLID', color: { r: .96, g: .98, b: 1, a: 1 } }], cornerRadius: 24, children: [
     { id: '1:2', type: 'TEXT', name: 'Title', characters: 'Gói data nổi bật', absoluteBoundingBox: { x: 20, y: 20, width: 250, height: 28 }, fills: [{ type: 'SOLID', color: { r: .04, g: .07, b: .14, a: 1 } }], style: { fontSize: 22, fontWeight: 700, lineHeightPx: 28, textAutoResize: 'WIDTH_AND_HEIGHT' } },
     { id: '1:3', type: 'TEXT', name: 'Description', characters: 'Ảnh-only, Figma-only hoặc kết hợp cả hai', absoluteBoundingBox: { x: 20, y: 60, width: 330, height: 20 }, fills: [{ type: 'SOLID', color: { r: .35, g: .4, b: .5, a: 1 } }], style: { fontSize: 14, fontWeight: 400, lineHeightPx: 20, textAutoResize: 'HEIGHT' } },
-    { id: '1:4', type: 'FRAME', name: 'CTA Button', absoluteBoundingBox: { x: 20, y: 228, width: 350, height: 56 }, fills: [{ type: 'SOLID', color: { r: .12, g: .36, b: .98, a: 1 } }], cornerRadius: 18, children: [{ id: '1:5', type: 'TEXT', name: 'CTA Title', characters: 'Generate UIKit', absoluteBoundingBox: { x: 138, y: 246, width: 115, height: 20 }, fills: [{ type: 'SOLID', color: { r: 1, g: 1, b: 1, a: 1 } }], style: { fontSize: 15, fontWeight: 600, lineHeightPx: 20, textAlignHorizontal: 'CENTER', textAutoResize: 'WIDTH_AND_HEIGHT' } }] }
+    { id: '1:4', type: 'FRAME', name: 'CTA Button', layoutPositioning: 'ABSOLUTE', constraints: { horizontal: 'LEFT_RIGHT', vertical: 'BOTTOM' }, absoluteBoundingBox: { x: 20, y: 228, width: 350, height: 56 }, fills: [{ type: 'SOLID', color: { r: .12, g: .36, b: .98, a: 1 } }], cornerRadius: 18, children: [{ id: '1:5', type: 'TEXT', name: 'CTA Title', characters: 'Generate UIKit', absoluteBoundingBox: { x: 138, y: 246, width: 115, height: 20 }, fills: [{ type: 'SOLID', color: { r: 1, g: 1, b: 1, a: 1 } }], style: { fontSize: 15, fontWeight: 600, lineHeightPx: 20, textAlignHorizontal: 'CENTER', textAutoResize: 'WIDTH_AND_HEIGHT' } }] }
   ] } }
 }
 
