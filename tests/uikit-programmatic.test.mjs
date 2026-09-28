@@ -33,6 +33,14 @@ const card = filesFor(cardScreen, 'HomeView')
 assert.ok(card['Components/PackageCardView/PackageCardView.swift'])
 assert.ok(card['UIKit-Code/Components/PackageCardView/PackageCardView.swift'])
 
+// UIColor(named:) trả về UIColor? — `.cgColor` không optional-chain là lỗi compile Swift.
+for (const [path, content] of Object.entries(card)) {
+  if (!path.endsWith('.swift')) continue
+  assert.doesNotMatch(content, /UIColor\(named: "[^"]*"\)\.cgColor/, `${path}: UIColor(named:) must use ?.cgColor`)
+}
+assert.match(card['Components/PackageCardView/PackageCardView.swift'], /layer\.borderColor = UIColor\(named: "packageCardBorder"\)\?\.cgColor/)
+assert.match(card['UIKit-Code/Components/PackageCardView/PackageCardView.swift'], /layer\.shadowColor = UIColor\(named: "packageCardShadow"\)\?\.cgColor/)
+
 // Dark Mode (T02): màu sắc phải đi qua Colors.xcassets (UIColor(named:)), không literal UIColor(red:...).
 assert.doesNotMatch(xib, /UIColor\(red:/, 'generated Swift should reference named colors, not literal UIColor(red:)')
 assert.doesNotMatch(code, /UIColor\(red:/, 'programmatic Swift should reference named colors, not literal UIColor(red:)')

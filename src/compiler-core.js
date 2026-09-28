@@ -389,7 +389,7 @@ function generateSwiftStyleLines(root, { includeStatic = false, rootRef = 'conte
       lines.push(`        ${target}layer.masksToBounds = true`)
     }
     if (style.borderColor && style.borderWidth > 0) {
-      lines.push(`        ${target}layer.borderColor = ${namedColor(colorRegistry, style.borderColor, `${hint}Border`)}.cgColor`)
+      lines.push(`        ${target}layer.borderColor = ${cgColor(namedColor(colorRegistry, style.borderColor, `${hint}Border`))}`)
       lines.push(`        ${target}layer.borderWidth = ${formatNumber(style.borderWidth)}`)
     }
     if (style.opacity < 1) lines.push(`        ${target}alpha = ${formatNumber(style.opacity)}`)
@@ -416,7 +416,7 @@ function generateSwiftStyleLines(root, { includeStatic = false, rootRef = 'conte
       lines.push(`        ${target}accessibilityLabel = ${swiftString(humanizeLayerName(node.name))}`)
     }
     if (style.shadow) {
-      lines.push(`        ${target}layer.shadowColor = ${namedColor(colorRegistry, style.shadow.color || 'rgba(0, 0, 0, 0.2)', `${hint}Shadow`)}.cgColor`)
+      lines.push(`        ${target}layer.shadowColor = ${cgColor(namedColor(colorRegistry, style.shadow.color || 'rgba(0, 0, 0, 0.2)', `${hint}Shadow`))}`)
       lines.push(`        ${target}layer.shadowOpacity = ${formatNumber(alphaFromRgba(style.shadow.color || 'rgba(0,0,0,0.2)'))}`)
       lines.push(`        ${target}layer.shadowOffset = CGSize(width: ${formatNumber(style.shadow.x)}, height: ${formatNumber(style.shadow.y)})`)
       lines.push(`        ${target}layer.shadowRadius = ${formatNumber(style.shadow.blur / 2)}`)
@@ -805,6 +805,12 @@ function rgbaToSwift(rgba) {
 function namedColor(colorRegistry, rgba, hint) {
   if (!colorRegistry) return rgbaToSwift(rgba)
   return `UIColor(named: ${swiftString(colorRegistry.register(rgba, hint))})`
+}
+
+// UIColor(named:) là failable init (UIColor?) — phải optional-chain `.cgColor`; literal UIColor(red:...) thì không.
+// borderColor/shadowColor nhận CGColor? nên gán nil (asset thiếu) vẫn compile và chỉ mất màu, không crash.
+function cgColor(uiColorExpression) {
+  return uiColorExpression.startsWith('UIColor(named:') ? `${uiColorExpression}?.cgColor` : `${uiColorExpression}.cgColor`
 }
 
 export function parseRgba(value) {
