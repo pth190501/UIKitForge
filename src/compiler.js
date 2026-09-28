@@ -129,7 +129,7 @@ function applyInstanceOverrides(instance) {
     const target = byOutlet.get(slot.outlet)
     if (!target) continue
     if (slot.kind === 'text') target.text = value
-    else target.hidden = Boolean(value)
+    else target.hidden = slot.shows ? !value : Boolean(value)
   }
 }
 

@@ -19,10 +19,16 @@ export function compileUIKit(figmaData, requestedRootClass = '', options = {}) {
   const componentMap = new Map()
   const usedNames = new Set([rootClass])
 
+  // Nhiều variant của cùng component set (cùng tên instance) → tên class kèm giá trị variant (ButtonPrimaryView,
+  // ButtonSecondaryView) thay vì Button2View khó hiểu.
+  const nameCounts = new Map()
+  for (const { node } of candidates.instances) nameCounts.set(node.name, (nameCounts.get(node.name) || 0) + 1)
   for (const { componentId, node, all } of candidates.instances) {
     // Component chỉ là icon/hình vẽ (vd Wallet, Chevron) → xuất ảnh thay vì sinh class UIView rỗng.
     if (node.id === sourceRoot.id || isRasterCandidate(node)) continue
-    let className = sanitizeClassName(`${node.name || 'Component'}View`, 'GeneratedComponentView')
+    const variants = Object.values(node.componentProperties || {}).filter(prop => prop?.type === 'VARIANT').map(prop => String(prop.value))
+    const baseName = nameCounts.get(node.name) > 1 && variants.length ? `${node.name} ${variants.join(' ')}` : node.name
+    let className = sanitizeClassName(`${baseName || 'Component'}View`, 'GeneratedComponentView')
     className = uniqueClassName(className, usedNames)
     componentMap.set(componentId, { className, source: node, instances: (all || [node]).filter(item => item.id !== sourceRoot.id) })
   }
@@ -95,9 +101,14 @@ export function scrollInfo(sourceRoot, mainIR) {
 
 // ---- Nội dung riêng từng instance (text override / ẩn-hiện) ----
 // Id node bên trong instance có dạng `<instanceId>;<id trong component>` — phần sau là khoá chung giữa mọi instance.
+// Id con trong instance: `I<instanceId>;<id gốc>` với instance cấp ngoài (id "6:2" → "I6:2;10:3"), hoặc
+// `<instanceId>;<id gốc>` khi chính instance đã nằm trong instance khác (id đã bắt đầu bằng "I...").
 function internalKey(rawId, instanceId) {
-  const prefix = `${instanceId};`
-  return String(rawId || '').startsWith(prefix) ? String(rawId).slice(prefix.length) : null
+  const id = String(rawId || '')
+  for (const prefix of [`${instanceId};`, `I${instanceId};`]) {
+    if (id.startsWith(prefix)) return id.slice(prefix.length)
+  }
+  return null
 }
 
 function indexRawTree(root) {
@@ -121,18 +132,37 @@ function indexInstance(instance) {
 // Slot = chỗ trong component mà ít nhất một instance khác instance gốc: text (label) hoặc ẩn/hiện (bất kỳ view).
 function componentSlots(ir, entry) {
   const indexes = entry.instances.map(indexInstance)
+  const sourceIndex = indexInstance(entry.source)
   const slots = []
+  // Tên đã có sẵn trong struct SwiftUI / Item / init(item:, action:) — property Figma tên "Body" không được đè `body`.
+  const used = new Set(['body', 'action', 'id', 'item'])
+  // Tên tham số ưu tiên theo component property Figma (designer đặt: "Label", "Show icon") thay vì theo outlet.
+  const paramName = (propertyKey, fallback) => {
+    const base = propertyKey ? sanitizeOutletName(String(propertyKey).replace(/#.*$/, '')) : fallback
+    let name = base
+    for (let n = 2; used.has(name); n++) name = `${base}${n}`
+    used.add(name)
+    return name
+  }
   for (const node of flatten(ir).slice(1)) {
     const key = internalKey(node.figmaId, entry.source.id)
     if (!key) continue
+    const references = sourceIndex.get(key)?.componentPropertyReferences || {}
     if (node.kind === 'label' && indexes.some(index => { const raw = index.get(key); return raw?.type === 'TEXT' && displayText(raw) !== node.text })) {
-      slots.push({ kind: 'text', key, nodeId: node.id, outlet: node.outlet, param: `${node.outlet}Text`, fallback: node.text })
+      slots.push({ kind: 'text', key, nodeId: node.id, outlet: node.outlet, param: paramName(references.characters, `${node.outlet}Text`), fallback: node.text })
     }
     if (indexes.some(index => { const raw = index.get(key); return !raw || raw.visible === false })) {
-      slots.push({ kind: 'hidden', key, nodeId: node.id, outlet: node.outlet, param: `${node.outlet}Hidden`, fallback: false })
+      // Boolean property ("Show icon") → tham số mang nghĩa hiện (true = hiện) như trong Figma; không có thì xxxHidden.
+      const shows = Boolean(references.visible)
+      slots.push({ kind: 'hidden', key, nodeId: node.id, outlet: node.outlet, param: paramName(references.visible, `${node.outlet}Hidden`), fallback: shows, shows })
     }
   }
   return slots
+}
+
+// Giá trị tham số boolean của slot: `shows` → true là hiện, còn lại true là ẩn.
+export function slotBoolValue(slot, hidden) {
+  return slot.shows ? !hidden : hidden
 }
 
 function annotateInstanceOverrides(root, rawById, slotsByClass) {
@@ -143,7 +173,7 @@ function annotateInstanceOverrides(root, rawById, slotsByClass) {
     const index = indexInstance(raw)
     node.overrides = slots.map(slot => {
       const target = index.get(slot.key)
-      const value = slot.kind === 'text' ? (target?.type === 'TEXT' ? displayText(target) : slot.fallback) : (!target || target.visible === false)
+      const value = slot.kind === 'text' ? (target?.type === 'TEXT' ? displayText(target) : slot.fallback) : slotBoolValue(slot, !target || target.visible === false)
       return { slot, value }
     })
   }
@@ -553,7 +583,7 @@ function withConfigure(swift, slots) {
   const fields = slots.map(slot => `        let ${slot.param}: ${slot.kind === 'text' ? 'String' : 'Bool'}`)
   const assigns = slots.map(slot => slot.kind === 'text'
     ? `        ${slot.outlet}.text = content.${slot.param}`
-    : `        ${slot.outlet}.isHidden = content.${slot.param}`)
+    : `        ${slot.outlet}.isHidden = ${slot.shows ? '!' : ''}content.${slot.param}`)
   const block = `\n    struct Content {\n${fields.join('\n')}\n    }\n\n    func configure(with content: Content) {\n${assigns.join('\n')}\n    }\n}\n`
   return swift.replace(/\n}\n$/, `\n${block}`)
 }

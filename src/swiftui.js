@@ -152,10 +152,11 @@ function generateComponentView(className, root, api, colorRegistry) {
   // màn chính truyền giá trị riêng từng instance mà không cần viết init tay.
   const slots = root.slots || []
   ctx.textSlots = new Map(slots.filter(slot => slot.kind === 'text').map(slot => [slot.nodeId, slot.param]))
-  ctx.hiddenSlots = new Map(slots.filter(slot => slot.kind === 'hidden').map(slot => [slot.nodeId, slot.param]))
+  // Giá trị map là điều kiện hiện view: `!xxxHidden` hoặc `showIcon` (boolean property Figma).
+  ctx.hiddenSlots = new Map(slots.filter(slot => slot.kind === 'hidden').map(slot => [slot.nodeId, slot.shows ? slot.param : `!${slot.param}`]))
   for (const slot of slots) ctx.used.add(slot.param)
   const slotLines = slots
-    .map(slot => `    var ${slot.param} = ${slot.kind === 'text' ? swiftString(slot.fallback) : 'false'}`)
+    .map(slot => `    var ${slot.param} = ${slot.kind === 'text' ? swiftString(slot.fallback) : String(Boolean(slot.fallback))}`)
     .flatMap(line => line.length > 120 ? ['    // swiftlint:disable:next line_length', line] : [line])
   // Component nút: `action` đặt cuối để memberwise init vẫn gọi được như cũ (ButtonsButtonView()).
   if (root.meta?.isButton) slotLines.push('    var action: () -> Void = {}')
@@ -176,7 +177,7 @@ function generateComponentView(className, root, api, colorRegistry) {
 function itemExtension(className, slots, isButton) {
   if (!slots.length) return ''
   const fields = slots
-    .map(slot => `        var ${slot.param} = ${slot.kind === 'text' ? swiftString(slot.fallback) : 'false'}`)
+    .map(slot => `        var ${slot.param} = ${slot.kind === 'text' ? swiftString(slot.fallback) : String(Boolean(slot.fallback))}`)
     .flatMap(line => line.length > 120 ? ['        // swiftlint:disable:next line_length', line] : [line])
   const args = [...slots.map(slot => `${slot.param}: item.${slot.param}`), ...(isButton ? ['action: action'] : [])]
   const params = isButton ? 'item: Item, action: @escaping () -> Void = {}' : 'item: Item'
@@ -253,7 +254,7 @@ function renderContentLines(node, ctx, isRoot, sizeModifiers) {
   // rút khỏi stack như UIView.isHidden trong UIStackView.
   if (!isRoot && ctx.hiddenSlots?.has(node.id) && ctx.skipHidden !== node.id) {
     const inner = renderContent(node, { ...ctx, skipHidden: node.id }, false, sizeModifiers)
-    return ['Group {', `    if !${ctx.hiddenSlots.get(node.id)} {`, ...indent(inner, 2), '    }', '}']
+    return ['Group {', `    if ${ctx.hiddenSlots.get(node.id)} {`, ...indent(inner, 2), '    }', '}']
   }
   if (!isRoot && node.kind === 'view' && node.children.length) {
     const name = uniqueName(ctx, `${node.outlet}Section`)

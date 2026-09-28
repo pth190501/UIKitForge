@@ -137,3 +137,30 @@ export const longScreen = {
     ]
   }
 }
+
+// Component có property Figma (TEXT "Label", BOOLEAN "Show icon") và 2 variant của cùng set "Button" (P9) — dạng REST:
+// instance mang componentProperties, node con mang componentPropertyReferences.
+const tagInstance = (id, x, label, showIcon) => ({
+  id, type: 'INSTANCE', name: 'Tag', componentId: 'tag', layoutMode: 'HORIZONTAL', itemSpacing: 4, paddingLeft: 8, paddingRight: 8,
+  counterAxisAlignItems: 'CENTER', layoutSizingHorizontal: 'HUG', layoutSizingVertical: 'FIXED', fills: solid(0.9, 0.95, 1), cornerRadius: 12,
+  componentProperties: { 'Label#10:0': { type: 'TEXT', value: label }, 'Show icon#10:1': { type: 'BOOLEAN', value: showIcon } },
+  ...box(x, 20, 90, 24),
+  children: [
+    { id: `I${id};10:2`, type: 'RECTANGLE', name: 'Icon', visible: showIcon, componentPropertyReferences: { visible: 'Show icon#10:1' }, fills: solid(0.2, 0.5, 1), layoutSizingHorizontal: 'FIXED', layoutSizingVertical: 'FIXED', ...box(x + 8, 26, 12, 12) },
+    text(`I${id};10:3`, label, x + 24, 23, 60, 18, { componentPropertyReferences: { characters: 'Label#10:0' }, layoutSizingHorizontal: 'HUG', layoutSizingVertical: 'HUG', style: { fontSize: 13, textAutoResize: 'WIDTH_AND_HEIGHT' } })
+  ]
+})
+const buttonVariant = (id, componentId, state, x) => ({
+  id, type: 'INSTANCE', name: 'Button', componentId, componentProperties: { State: { type: 'VARIANT', value: state } },
+  cornerRadius: 8, fills: state === 'Primary' ? solid(0.2, 0.5, 1) : solid(1, 1, 1), ...box(x, 60, 160, 44),
+  children: [text(`I${id};11:1`, state === 'Primary' ? 'Mua ngay' : 'Để sau', x + 16, 72, 128, 20, { style: { fontSize: 15, fontWeight: 600, textAlignHorizontal: 'CENTER' } })]
+})
+export const componentPropertiesScreen = {
+  root: {
+    id: '6:1', type: 'FRAME', name: 'Offers', fills: solid(1, 1, 1), ...box(0, 0, 390, 120),
+    children: [
+      tagInstance('6:2', 16, 'Hot', true), tagInstance('6:3', 116, 'Mới', false), tagInstance('6:4', 216, 'Giảm 50%', true),
+      buttonVariant('6:5', 'btn-primary', 'Primary', 16), buttonVariant('6:6', 'btn-secondary', 'Secondary', 200)
+    ]
+  }
+}
