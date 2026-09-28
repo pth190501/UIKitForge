@@ -3,14 +3,15 @@ import { normalizeArchitecture, viperEntity, viperInteractor, viperNames, viperS
 
 // Sinh SwiftUI MVVM-R từ cùng IR với UIKit. Router dùng UIHostingController để chạy giống nhau từ iOS 13,
 // tránh phải tách NavigationView (13) / NavigationStack (16).
-export function generateSwiftUIFiles({ rootClass, mainIR, componentIRs = [], deploymentTarget = 13, colorRegistry, architecture = 'mvvm-r' }) {
+export function generateSwiftUIFiles({ rootClass, mainIR, componentIRs = [], deploymentTarget = 13, colorRegistry, architecture = 'mvvm-r', scroll = null }) {
   const arch = normalizeArchitecture(architecture)
   const base = rootClass.replace(/View$/, '') || rootClass
   const names = { view: `${base}View`, viewModel: `${base}ViewModel`, router: `${base}Router` }
   const api = {
     observation: deploymentTarget >= 17,
     foregroundStyle: deploymentTarget >= 15,
-    ignoresSafeArea: deploymentTarget >= 14
+    ignoresSafeArea: deploymentTarget >= 14,
+    scroll
   }
   // MVC: SwiftUI không có controller — text viết thẳng trong View (texts = null), chỉ sinh 1 file View.
   const texts = arch === 'mvc' ? null : []
@@ -121,7 +122,13 @@ function generateViperPresenter(n, texts, api) {
 function generateScreenView(names, root, api, texts, colorRegistry, arch = 'mvvm-r', viper = null) {
   const owner = arch === 'viper' ? 'presenter' : 'viewModel'
   const ctx = createContext(api, texts, colorRegistry, owner)
-  const body = expression(renderContent(root, ctx, true), [api.ignoresSafeArea ? '.ignoresSafeArea()' : '.edgesIgnoringSafeArea(.all)'])
+  const content = renderContent(root, ctx, true)
+  // Màn cao hơn thiết bị → ScrollView; khung Figma cố định thì ghim chiều cao (ScrollView đề xuất chiều cao vô hạn,
+  // nội dung dùng maxHeight: .infinity sẽ không có kích thước xác định).
+  const scrolled = api.scroll
+    ? ['ScrollView {', ...indent(api.scroll.fixedHeight ? expression(content, [`.frame(height: ${formatNumber(api.scroll.height)})`]) : content, 1), '}']
+    : content
+  const body = expression(scrolled, [api.ignoresSafeArea ? '.ignoresSafeArea()' : '.edgesIgnoringSafeArea(.all)'])
   const ownerType = viper ? viper.presenter : names.viewModel
   const property = arch === 'mvc' ? '' : api.observation ? `    let ${owner}: ${ownerType}\n\n` : `    @ObservedObject var ${owner}: ${ownerType}\n\n`
   // VIPER: tách dòng để preview không vượt line_length khi tên màn hình dài.

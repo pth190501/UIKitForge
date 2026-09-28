@@ -4,10 +4,10 @@ import { dirname, join } from 'node:path'
 import { compileUIKit } from '../src/compiler.js'
 import { ARCHITECTURES } from '../src/uikit-router.js'
 import { LINT_CONFIG_FILES } from '../src/lint-config.js'
-import { banGoiNgayScreen, cardScreen, feedSlotScreen, fidelityScreen, layoutScreen, textStylingScreen } from '../tests/fixtures.mjs'
+import { banGoiNgayScreen, cardScreen, feedSlotScreen, fidelityScreen, layoutScreen, longScreen, textStylingScreen } from '../tests/fixtures.mjs'
 
 const OUT_DIR = 'ci-artifacts'
-const FIXTURES = { layoutScreen, cardScreen, feedSlotScreen, banGoiNgayScreen, fidelityScreen, textStylingScreen }
+const FIXTURES = { layoutScreen, cardScreen, feedSlotScreen, banGoiNgayScreen, fidelityScreen, textStylingScreen, longScreen }
 const TARGETS = [13, 17]
 
 rmSync(OUT_DIR, { recursive: true, force: true })

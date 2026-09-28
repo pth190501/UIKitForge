@@ -6,12 +6,12 @@ export function normalizeArchitecture(value) {
 
 // File kiến trúc (VC/VM/Router) dùng chung cho cả hai biến thể UIKit (XIB và Code) vì đều expose cùng class `rootClass`.
 // MVVM-R: VC + VM + Router · MVVM: VC + VM (VC tự tạo VM mặc định) · MVC: chỉ VC giữ view · VIPER: xem generateUIKitViperFiles.
-export function generateUIKitMVVMFiles({ rootClass, architecture = 'mvvm-r' }) {
+export function generateUIKitMVVMFiles({ rootClass, architecture = 'mvvm-r', scroll = null }) {
   const arch = normalizeArchitecture(architecture)
   const base = rootClass.replace(/View$/, '') || rootClass
-  if (arch === 'viper') return generateUIKitViperFiles(base, rootClass)
+  if (arch === 'viper') return generateUIKitViperFiles(base, rootClass, scroll)
   const names = { viewController: `${base}ViewController`, viewModel: `${base}ViewModel`, router: `${base}Router` }
-  const files = [swiftFile(`${rootClass}/${names.viewController}.swift`, generateViewController(names, rootClass, arch), 'main')]
+  const files = [swiftFile(`${rootClass}/${names.viewController}.swift`, generateViewController(names, rootClass, arch, scroll), 'main')]
   if (arch !== 'mvc') files.push(swiftFile(`${rootClass}/${names.viewModel}.swift`, generateViewModel(names, arch), 'main'))
   if (arch === 'mvvm-r') files.push(swiftFile(`${rootClass}/${names.router}.swift`, generateRouter(names), 'main'))
   return files
@@ -21,8 +21,31 @@ function swiftFile(path, content, kind) {
   return { path, name: path.split('/').pop(), language: 'swift', content, kind, target: 'uikit' }
 }
 
-function generateViewController(names, rootClass, arch) {
-  const loadView = `    override func loadView() {\n        view = contentView\n    }\n`
+// Màn cao hơn thiết bị: view thiết kế nằm trong UIScrollView — ghim vào contentLayoutGuide, rộng bằng frameLayoutGuide
+// (chỉ cuộn dọc); chiều cao cố định theo Figma khi khung không hug nội dung.
+function loadViewBlock(scroll) {
+  if (!scroll) return `    override func loadView() {\n        view = contentView\n    }\n`
+  const height = scroll.fixedHeight ? `,\n            contentView.heightAnchor.constraint(equalToConstant: ${Number(scroll.height.toFixed(2))})` : ''
+  return `    override func loadView() {
+        let scrollView = UIScrollView()
+        scrollView.backgroundColor = contentView.backgroundColor
+        scrollView.alwaysBounceVertical = true
+        scrollView.addSubview(contentView)
+        contentView.translatesAutoresizingMaskIntoConstraints = false
+        NSLayoutConstraint.activate([
+            contentView.topAnchor.constraint(equalTo: scrollView.contentLayoutGuide.topAnchor),
+            contentView.leadingAnchor.constraint(equalTo: scrollView.contentLayoutGuide.leadingAnchor),
+            contentView.trailingAnchor.constraint(equalTo: scrollView.contentLayoutGuide.trailingAnchor),
+            contentView.bottomAnchor.constraint(equalTo: scrollView.contentLayoutGuide.bottomAnchor),
+            contentView.widthAnchor.constraint(equalTo: scrollView.frameLayoutGuide.widthAnchor)${height}
+        ])
+        view = scrollView
+    }
+`
+}
+
+function generateViewController(names, rootClass, arch, scroll) {
+  const loadView = loadViewBlock(scroll)
   if (arch === 'mvc') {
     return `import UIKit\n\nfinal class ${names.viewController}: UIViewController {\n    private let contentView = ${rootClass}(frame: .zero)\n\n${loadView}}\n`
   }
@@ -51,13 +74,13 @@ export function viperNames(base) {
 
 // VIPER: View (VC) → Presenter (strong) → Interactor/Router (strong); ngược lại đều weak (Presenter.view,
 // Interactor.output, Router.viewController) để module không tự giữ nhau thành retain cycle.
-function generateUIKitViperFiles(base, rootClass) {
+function generateUIKitViperFiles(base, rootClass, scroll = null) {
   const n = viperNames(base)
   const file = (name, content) => swiftFile(`${rootClass}/${name}.swift`, content, 'main')
   return [
     file(n.contract, `import Foundation\n\nprotocol ${n.viewProtocol}: AnyObject {}\n\nprotocol ${n.presenterProtocol}: AnyObject {\n    func viewDidLoad()\n}\n\n${viperSharedProtocols(n)}`),
     // Conformance tách ra extension: vừa là style Swift phổ biến, vừa giữ dòng khai báo class ngắn (line_length) khi tên màn hình dài.
-    file(n.viewController, `import UIKit\n\nfinal class ${n.viewController}: UIViewController {\n    var presenter: ${n.presenterProtocol}?\n    private let contentView = ${rootClass}(frame: .zero)\n\n    override func loadView() {\n        view = contentView\n    }\n\n    override func viewDidLoad() {\n        super.viewDidLoad()\n        presenter?.viewDidLoad()\n    }\n}\n\nextension ${n.viewController}: ${n.viewProtocol} {}\n`),
+    file(n.viewController, `import UIKit\n\nfinal class ${n.viewController}: UIViewController {\n    var presenter: ${n.presenterProtocol}?\n    private let contentView = ${rootClass}(frame: .zero)\n\n${loadViewBlock(scroll)}\n    override func viewDidLoad() {\n        super.viewDidLoad()\n        presenter?.viewDidLoad()\n    }\n}\n\nextension ${n.viewController}: ${n.viewProtocol} {}\n`),
     file(n.presenter, `import Foundation\n\nfinal class ${n.presenter} {\n    weak var view: ${n.viewProtocol}?\n    private let interactor: ${n.interactorInput}\n    private let router: ${n.routerProtocol}\n\n    init(\n        view: ${n.viewProtocol},\n        interactor: ${n.interactorInput},\n        router: ${n.routerProtocol}\n    ) {\n        self.view = view\n        self.interactor = interactor\n        self.router = router\n    }\n}\n\nextension ${n.presenter}: ${n.presenterProtocol} {\n    func viewDidLoad() {}\n}\n\nextension ${n.presenter}: ${n.interactorOutput} {}\n`),
     file(n.interactor, viperInteractor(n)),
     file(n.router, `import UIKit\n\nfinal class ${n.router} {\n    weak var viewController: UIViewController?\n\n    static func createModule() -> UIViewController {\n        let viewController = ${n.viewController}()\n        let interactor = ${n.interactor}()\n        let router = ${n.router}()\n        let presenter = ${n.presenter}(\n            view: viewController,\n            interactor: interactor,\n            router: router\n        )\n        viewController.presenter = presenter\n        interactor.output = presenter\n        router.viewController = viewController\n        return viewController\n    }\n}\n\nextension ${n.router}: ${n.routerProtocol} {}\n`),

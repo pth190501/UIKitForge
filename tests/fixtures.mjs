@@ -125,3 +125,15 @@ export const textStylingScreen = {
     ]
   }
 }
+
+// Màn hình dài hơn thiết bị (1400pt) → VC bọc UIScrollView, SwiftUI bọc ScrollView (P7).
+export const longScreen = {
+  root: {
+    id: '5:1', type: 'FRAME', name: 'Long Feed', fills: solid(0.97, 0.97, 0.98), ...box(0, 0, 390, 1400),
+    children: [
+      text('5:2', 'Header', 16, 60, 358, 24, { constraints: { horizontal: 'LEFT_RIGHT', vertical: 'TOP' } }),
+      { id: '5:3', type: 'FRAME', name: 'Card', cornerRadius: 12, fills: solid(1, 1, 1), constraints: { horizontal: 'LEFT_RIGHT', vertical: 'TOP' }, ...box(16, 100, 358, 600) },
+      text('5:4', 'Footer', 16, 1340, 358, 24, { constraints: { horizontal: 'LEFT_RIGHT', vertical: 'TOP' } })
+    ]
+  }
+}

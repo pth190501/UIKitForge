@@ -18,7 +18,7 @@ export function compileUIKit(figmaData, requestedRootClass = '', options = {}) {
 function generateAll(figmaData, requestedRootClass, options) {
   const result = compileCore(figmaData, requestedRootClass, options)
   result.architecture = normalizeArchitecture(options.architecture)
-  result.swiftUIFiles = generateSwiftUIFiles({ rootClass: result.rootClass, mainIR: result.previewRoot, componentIRs: result.componentIRs, deploymentTarget: result.deploymentTarget, colorRegistry: result.colorRegistry, architecture: result.architecture })
+  result.swiftUIFiles = generateSwiftUIFiles({ rootClass: result.rootClass, mainIR: result.previewRoot, componentIRs: result.componentIRs, deploymentTarget: result.deploymentTarget, colorRegistry: result.colorRegistry, architecture: result.architecture, scroll: result.scroll })
   return result
 }
 
@@ -26,7 +26,7 @@ function finishCompile(result, figmaData) {
   // SwiftUI đăng ký màu vào cùng registry sau khi core đã chụp `colors` — chụp lại để Colors.xcassets không thiếu màu chỉ SwiftUI dùng.
   result.colors = result.colorRegistry.entries()
   result.namedColors = Object.fromEntries(result.colors.map(({ name, rgba }) => [name, rgba]))
-  result.files.push(...generateUIKitMVVMFiles({ rootClass: result.rootClass, architecture: result.architecture }), ...LINT_CONFIG_FILES)
+  result.files.push(...generateUIKitMVVMFiles({ rootClass: result.rootClass, architecture: result.architecture, scroll: result.scroll }), ...LINT_CONFIG_FILES)
   // Lấy TODO từ IR trước khi hydrate preview (hydrate thay style bằng dữ liệu CSS, không mang theo todos).
   result.todos = [
     { title: result.rootClass, items: collectTodoItems(result.previewRoot) },

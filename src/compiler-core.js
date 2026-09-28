@@ -77,8 +77,20 @@ export function compileUIKit(figmaData, requestedRootClass = '', options = {}) {
   }
   return {
     rootClass, deploymentTarget, sourceRoot, previewRoot: mainIR, files, components, componentIRs,
-    colorRegistry, colors: colorRegistry.entries(), warnings: [...new Set(warnings)]
+    colorRegistry, colors: colorRegistry.entries(), warnings: [...new Set(warnings)],
+    scroll: scrollInfo(sourceRoot, mainIR)
   }
+}
+
+// iPhone cao nhất (Pro Max) là 932pt — khung Figma cao hơn thì chắc chắn phải cuộn; hoặc designer bật scroll dọc.
+const MAX_DEVICE_HEIGHT = 932
+
+// Màn hình cần cuộn dọc → VC/SwiftUI bọc view thiết kế trong scroll view. fixedHeight: khung Figma cố định (không
+// hug nội dung) thì phải ghim đúng chiều cao, nếu không scroll view không biết content cao bao nhiêu.
+export function scrollInfo(sourceRoot, mainIR) {
+  const vertical = /VERTICAL/.test(String(sourceRoot?.overflowDirection || ''))
+  if (!vertical && !(mainIR.frame.height > MAX_DEVICE_HEIGHT)) return null
+  return { height: mainIR.frame.height, fixedHeight: mainIR.sizing?.v !== 'HUG' }
 }
 
 // ---- Nội dung riêng từng instance (text override / ẩn-hiện) ----
