@@ -9,6 +9,7 @@ import { diffImageData, diffSeverity } from './pixel-diff.js'
 import { rerootSharedMVVMFile } from './export-layout.js'
 
 const STORAGE_KEY = 'uikitforge.figmaToken'
+const ARCHITECTURE_LABELS = { 'mvvm-r': 'MVVM-R', mvvm: 'MVVM', mvc: 'MVC' }
 const SESSION_KEY = 'uikitforge.figmaToken.session'
 
 const state = {
@@ -28,7 +29,8 @@ const state = {
   showSafeArea: false,
   focusPreview: false,
   inputMode: 'idle',
-  outputTarget: 'uikit-xib'
+  outputTarget: 'uikit-xib',
+  architecture: 'mvvm-r'
 }
 
 const app = document.querySelector('#app')
@@ -58,48 +60,62 @@ app.innerHTML = `
       </div>
     </section>
 
-    <section class="source-panel source-panel-v3">
-      <div class="field screenshot-field drop-field" id="screenshotDrop">
-        <label for="screenshotImage">Screenshot <span>optional if Figma is provided</span></label>
-        <input id="screenshotImage" type="file" accept="image/*" />
-        <div class="drop-copy"><strong>Drop screenshot here</strong><span id="screenshotName">PNG / JPG / WEBP</span></div>
-      </div>
-      <div class="field figma-url-field">
-        <label for="figmaUrl">Figma node URL <span>optional if screenshot is provided</span></label>
-        <input id="figmaUrl" type="url" placeholder="https://www.figma.com/design/...?...node-id=..." autocomplete="off" />
-      </div>
-      <div class="field token-field">
-        <label for="figmaToken">Figma token <span>only for Figma modes</span></label>
-        <div class="token-row">
-          <input id="figmaToken" type="password" placeholder="figd_..." autocomplete="off" />
-          <button class="icon-button" id="toggleToken" title="Show or hide token">◉</button>
-          <button class="icon-button danger-text" id="forgetToken" title="Forget token">×</button>
+    <section class="source-panel source-panel-v4">
+      <div class="source-row">
+        <span class="row-title">1 · Source</span>
+        <div class="field screenshot-field drop-field" id="screenshotDrop">
+          <label for="screenshotImage">Screenshot <span>optional if Figma is provided</span></label>
+          <input id="screenshotImage" type="file" accept="image/*" />
+          <div class="drop-copy"><strong>Drop screenshot here</strong><span id="screenshotName">PNG / JPG / WEBP</span></div>
         </div>
-        <label class="check-row"><input id="rememberToken" type="checkbox" /> Remember on this device</label>
+        <div class="field figma-url-field">
+          <label for="figmaUrl">Figma node URL <span>optional if screenshot is provided</span></label>
+          <input id="figmaUrl" type="url" placeholder="https://www.figma.com/design/...?...node-id=..." autocomplete="off" />
+        </div>
+        <div class="field token-field">
+          <label for="figmaToken">Figma token <span>only for Figma modes</span></label>
+          <div class="token-row">
+            <input id="figmaToken" type="password" placeholder="figd_..." autocomplete="off" />
+            <button class="icon-button" id="toggleToken" title="Show or hide token">◉</button>
+            <button class="icon-button danger-text" id="forgetToken" title="Forget token">×</button>
+          </div>
+          <label class="check-row"><input id="rememberToken" type="checkbox" /> Remember on this device</label>
+        </div>
       </div>
-      <div class="field root-class-field">
-        <label for="rootClass">Root class</label>
-        <input id="rootClass" type="text" value="GeneratedView" spellcheck="false" />
+      <div class="config-row">
+        <span class="row-title">2 · Output</span>
+        <div class="field output-target-field">
+          <label id="outputTargetLabel">Output</label>
+          <div class="segmented" id="outputTarget" role="radiogroup" aria-labelledby="outputTargetLabel">
+            <button type="button" role="radio" data-value="uikit-xib" aria-checked="true" class="active">UIKit · XIB</button>
+            <button type="button" role="radio" data-value="uikit-code" aria-checked="false">UIKit · Code</button>
+            <button type="button" role="radio" data-value="swiftui" aria-checked="false">SwiftUI</button>
+          </div>
+        </div>
+        <div class="field architecture-field">
+          <label id="architectureLabel">Architecture</label>
+          <div class="segmented" id="architecture" role="radiogroup" aria-labelledby="architectureLabel">
+            <button type="button" role="radio" data-value="mvvm-r" aria-checked="true" class="active" title="View + ViewController + ViewModel + Router">MVVM-R</button>
+            <button type="button" role="radio" data-value="mvvm" aria-checked="false" title="View + ViewController + ViewModel">MVVM</button>
+            <button type="button" role="radio" data-value="mvc" aria-checked="false" title="View + ViewController">MVC</button>
+          </div>
+        </div>
+        <div class="field deployment-target-field">
+          <label for="deploymentTarget">iOS target</label>
+          <select id="deploymentTarget">
+            <option value="13">iOS 13</option>
+            <option value="14">iOS 14</option>
+            <option value="15">iOS 15</option>
+            <option value="16">iOS 16</option>
+            <option value="17">iOS 17+</option>
+          </select>
+        </div>
+        <div class="field root-class-field">
+          <label for="rootClass">Root class</label>
+          <input id="rootClass" type="text" value="GeneratedView" spellcheck="false" />
+        </div>
+        <button class="button generate" id="generateButton"><span>Generate</span><b>⌘↵</b></button>
       </div>
-      <div class="field output-target-field">
-        <label for="outputTarget">Output</label>
-        <select id="outputTarget">
-          <option value="uikit-xib">UIKit (XIB)</option>
-          <option value="uikit-code">UIKit (Code)</option>
-          <option value="swiftui">SwiftUI</option>
-        </select>
-      </div>
-      <div class="field deployment-target-field">
-        <label for="deploymentTarget">iOS target</label>
-        <select id="deploymentTarget">
-          <option value="13">iOS 13</option>
-          <option value="14">iOS 14</option>
-          <option value="15">iOS 15</option>
-          <option value="16">iOS 16</option>
-          <option value="17">iOS 17+</option>
-        </select>
-      </div>
-      <button class="button generate" id="generateButton"><span>Generate UIKit</span><b>⌘↵</b></button>
     </section>
 
     <section class="status-strip" id="statusStrip">
@@ -164,7 +180,7 @@ app.innerHTML = `
 `
 
 const refs = Object.fromEntries([
-  'figmaUrl', 'rootClass', 'outputTarget', 'deploymentTarget', 'figmaToken', 'toggleToken', 'forgetToken', 'rememberToken', 'screenshotImage', 'screenshotDrop', 'screenshotName',
+  'figmaUrl', 'rootClass', 'outputTarget', 'architecture', 'deploymentTarget', 'figmaToken', 'toggleToken', 'forgetToken', 'rememberToken', 'screenshotImage', 'screenshotDrop', 'screenshotName',
   'generateButton', 'demoButton', 'downloadFileButton', 'downloadAllButton', 'statusText', 'statusMetrics', 'statusProgress',
   'statusStrip', 'workspace', 'fileCount', 'filesList', 'editorLanguage', 'editorFilename', 'codeEditor', 'editorFooter',
   'previewPanel', 'previewCanvas', 'previewTitle', 'previewSize', 'overlayRange', 'overlayValue', 'diffMatchValue', 'inspector', 'layersPanel',
@@ -178,7 +194,9 @@ updateInputMode()
 
 function wireEvents() {
   refs.generateButton.addEventListener('click', generateUIKit)
-  refs.outputTarget.addEventListener('change', () => { state.outputTarget = refs.outputTarget.value; if (state.compiled) { renderFileList(); selectFile(0) } })
+  wireSegmented(refs.outputTarget, value => { state.outputTarget = value; if (state.compiled) { renderFileList(); selectFile(0) } })
+  wireSegmented(refs.architecture, value => { state.architecture = value; recompileCurrent() })
+  refs.deploymentTarget.addEventListener('change', recompileCurrent)
   refs.demoButton.addEventListener('click', loadDemo)
   refs.figmaUrl.addEventListener('input', updateInputMode)
   refs.figmaToken.addEventListener('input', persistToken)
@@ -289,14 +307,7 @@ async function generateUIKit() {
       showProgress(0.58)
     }
 
-    const deploymentTarget = Number(refs.deploymentTarget.value) || 13
-    const compiled = compileUIKit(figmaData, rootClass, { deploymentTarget })
-    if (figmaData.analysisWarnings?.length) compiled.warnings.push(...figmaData.analysisWarnings)
-    compiled.warnings = [...new Set(compiled.warnings)]
-    compiled.assets = figmaData.assets || []
-    compiled.imageAssetRefs = collectImageAssetRefs(compiled)
-    if (figmaData.assetExportWarning) compiled.warnings.push(figmaData.assetExportWarning)
-    compiled.readme = generateReadme(compiled)
+    const compiled = compileFigmaData(figmaData, rootClass)
     state.figmaData = figmaData
     state.compiled = compiled
     state.selectedNodeId = null
@@ -319,9 +330,43 @@ async function generateUIKit() {
   } finally {
     state.generating = false
     refs.generateButton.disabled = false
-    refs.generateButton.querySelector('span').textContent = 'Generate UIKit'
+    refs.generateButton.querySelector('span').textContent = 'Generate'
     setTimeout(() => hideProgress(), 350)
   }
+}
+
+function compileFigmaData(figmaData, rootClass) {
+  const compiled = compileUIKit(figmaData, rootClass, { deploymentTarget: Number(refs.deploymentTarget.value) || 13, architecture: state.architecture })
+  if (figmaData.analysisWarnings?.length) compiled.warnings.push(...figmaData.analysisWarnings)
+  compiled.warnings = [...new Set(compiled.warnings)]
+  compiled.assets = figmaData.assets || []
+  compiled.imageAssetRefs = collectImageAssetRefs(compiled)
+  if (figmaData.assetExportWarning) compiled.warnings.push(figmaData.assetExportWarning)
+  compiled.readme = generateReadme(compiled)
+  return compiled
+}
+
+// Đổi kiến trúc / iOS target sau khi đã generate: compile lại từ dữ liệu Figma đang giữ, không gọi lại API.
+// Code đã sửa tay trong editor sẽ bị thay — đúng ý người dùng khi đổi cấu hình đầu ra.
+function recompileCurrent() {
+  if (!state.figmaData || state.generating) return
+  state.compiled = compileFigmaData(state.figmaData, state.compiled?.rootClass || refs.rootClass.value.trim() || 'GeneratedView')
+  state.selectedNodeId = null
+  renderWorkspace()
+  setStatus(`Regenerated ${state.compiled.rootClass} · ${ARCHITECTURE_LABELS[state.architecture]} · iOS ${state.compiled.deploymentTarget}+`, 'success', [`${state.compiled.files.length} files`])
+}
+
+function wireSegmented(group, onChange) {
+  group.addEventListener('click', event => {
+    const button = event.target.closest('button[data-value]')
+    if (!button || button.classList.contains('active')) return
+    for (const item of group.querySelectorAll('button[data-value]')) {
+      const selected = item === button
+      item.classList.toggle('active', selected)
+      item.setAttribute('aria-checked', String(selected))
+    }
+    onChange(button.dataset.value)
+  })
 }
 
 function renderWorkspace() {
@@ -527,22 +572,26 @@ function addImageAsset(zip, asset) {
   zip.file(`${folder}/Contents.json`, JSON.stringify({ images: [{ idiom: 'universal', filename, scale: '1x' }, { idiom: 'universal', scale: '2x' }, { idiom: 'universal', scale: '3x' }], info: { author: 'UIKitForge', version: 1 } }, null, 2))
 }
 
+function architectureFileSuffixes(architecture) {
+  return architecture === 'mvc' ? 'ViewController' : architecture === 'mvvm' ? 'ViewController/ViewModel' : 'ViewController/ViewModel/Router'
+}
+
 function generateReadme(compiled) {
   return `# ${compiled.rootClass}
 
-Generated by UIKitForge · deployment target: iOS ${compiled.deploymentTarget}+
+Generated by UIKitForge · deployment target: iOS ${compiled.deploymentTarget}+ · architecture: ${ARCHITECTURE_LABELS[compiled.architecture] || 'MVVM-R'}
 
 ## Output layout
 
-- \`${compiled.rootClass}/\` — UIKit-XIB export: XIB view + Swift outlets, plus the MVVM-R
-  \`${compiled.rootClass.replace(/View$/, '') || compiled.rootClass}ViewController/ViewModel/Router\`
+- \`${compiled.rootClass}/\` — UIKit-XIB export: XIB view + Swift outlets, plus the ${ARCHITECTURE_LABELS[compiled.architecture] || 'MVVM-R'}
+  \`${compiled.rootClass.replace(/View$/, '') || compiled.rootClass}${architectureFileSuffixes(compiled.architecture)}\`
   files. Self-contained.
 - \`UIKit-Code/\` — UIKit-Code export: the same screen built entirely in code (NSLayoutConstraint, no
-  XIB), including its own copy of \`...ViewController/ViewModel/Router\` under
+  XIB), including its own copy of \`...${architectureFileSuffixes(compiled.architecture)}\` under
   \`UIKit-Code/${compiled.rootClass}/\`. Also self-contained. Only one of these two folders is present
   per download (whichever output you had selected) — never mix both into one Xcode target, they
   declare the same class names.
-- \`SwiftUI/\` — an independent SwiftUI MVVM-R rewrite of the same layout.
+- \`SwiftUI/\` — an independent SwiftUI ${ARCHITECTURE_LABELS[compiled.architecture] || 'MVVM-R'} rewrite of the same layout.
 - \`Components/\` / \`UIKit-Code/Components/\` / \`SwiftUI/Components/\` — reusable Figma component
   instances, one pair per component.
 - \`Assets.xcassets/\` — image fills exported from Figma at @2x/@3x.
@@ -626,7 +675,7 @@ function hideProgress() { refs.statusProgress.hidden = true; refs.statusProgress
 function setOverlay(percent) { refs.overlayRange.value = String(percent); refs.overlayValue.textContent = `${percent}%`; state.overlayOpacity = percent / 100 }
 
 function loadDemo() {
-  const figmaData = createDemoFigmaData(); const compiled = compileUIKit(figmaData, 'V5FastDataCardView')
+  const figmaData = createDemoFigmaData(); const compiled = compileFigmaData(figmaData, 'V5FastDataCardView')
   state.figmaData = figmaData; state.compiled = compiled; state.selectedNodeId = null; state.zoom = 'fit'; refs.rootClass.value = compiled.rootClass; renderWorkspace()
   setStatus('Demo loaded. Image-only mode is ready too.', 'success', [`${summarizeFigmaTree(figmaData.root).nodes} layers`, `${compiled.files.length} files`, 'Live preview'])
 }

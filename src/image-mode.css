@@ -11,15 +11,17 @@
 .mode-copy { display: grid; grid-template-columns: auto auto; align-items: center; column-gap: 8px; row-gap: 2px; }
 .mode-copy .eyebrow { grid-column: 1 / -1; }
 .mode-copy strong { font-size: 12px; color: #eef2ff; }
-.mode-copy small { color: #748198; font-size: 10px; }
+.mode-copy small { color: var(--muted); font-size: 12px; }
 .mode-options { display: flex; align-items: center; gap: 6px; }
-.mode-pill { padding: 6px 9px; border: 1px solid #263148; border-radius: 999px; color: #64718a; font-size: 9px; font-weight: 800; letter-spacing: .06em; background: #0a0f1b; transition: .18s ease; }
+.mode-pill { padding: 6px 9px; border: 1px solid #263148; border-radius: 999px; color: var(--muted-2); font-size: 11px; font-weight: 800; letter-spacing: .06em; background: #0a0f1b; transition: .18s ease; }
 .mode-pill.active { color: #dfe5ff; border-color: rgba(108,126,255,.45); background: rgba(91,109,247,.13); box-shadow: inset 0 0 0 1px rgba(113,132,255,.06); }
 
-.source-panel-v3 {
-  grid-template-columns: minmax(240px, 1.05fr) minmax(320px, 1.5fr) minmax(250px, 1.1fr) minmax(150px, .65fr) 150px;
-  align-items: end;
-}
+/* 2 hàng tách bạch: "Nguồn" (đọc gì) và "Output" (sinh gì) — trước đây 7 ô dồn 1 hàng rồi tràn dòng lộn xộn. */
+.source-panel-v4 { display: flex; flex-direction: column; gap: 0; padding: 0; }
+.source-row, .config-row { display: grid; align-items: end; gap: 14px; padding: 14px 18px; }
+.source-row { grid-template-columns: 96px minmax(220px, 1fr) minmax(300px, 1.5fr) minmax(280px, 1.15fr); }
+.config-row { grid-template-columns: 96px auto auto 116px minmax(170px, 1fr) 150px; border-top: 1px solid var(--border); background: rgba(8, 12, 22, .55); }
+.row-title { align-self: center; color: var(--muted); font-size: 11px; font-weight: 800; letter-spacing: .07em; text-transform: uppercase; }
 .field.dimmed { opacity: .48; }
 .drop-field { position: relative; min-height: 72px; }
 .drop-field > input[type="file"] { position: absolute; inset: 19px 0 0; width: 100%; height: 53px; opacity: 0; cursor: pointer; z-index: 2; }
@@ -53,7 +55,7 @@
   font-weight: 800;
 }
 .drop-copy strong { font-size: 11px; color: #c6d0e3; }
-.drop-copy span { font-size: 9px; color: #63718a; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
+.drop-copy span { font-size: 11px; color: var(--muted-2); overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
 .drop-field.dragging .drop-copy { border-color: #7285ff; background: rgba(91,109,247,.09); box-shadow: 0 0 0 3px rgba(91,109,247,.08); }
 .drop-field.has-file .drop-copy { border-style: solid; border-color: rgba(75,217,159,.34); background: rgba(75,217,159,.055); }
 .drop-field.has-file .drop-copy::before { content: '✓'; color: #63d8aa; background: rgba(75,217,159,.12); border-color: rgba(75,217,159,.2); }
@@ -62,6 +64,8 @@
 .status-progress i { display: block; width: 0; height: 100%; border-radius: inherit; background: linear-gradient(90deg, #7083ff, #55d5b0); transition: width .2s ease; }
 
 @media (max-width: 1450px) {
-  .source-panel-v3 { grid-template-columns: minmax(210px, 1fr) minmax(280px, 1.35fr) minmax(220px, 1fr) 145px 140px; }
+  .source-row { grid-template-columns: 80px minmax(200px, 1fr) minmax(260px, 1.4fr) minmax(240px, 1.1fr); }
+  .config-row { grid-template-columns: 80px auto auto 104px minmax(140px, 1fr) 132px; }
+  .segmented button { padding: 0 10px; }
   .mode-copy small { display: none; }
 }
