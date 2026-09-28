@@ -208,7 +208,12 @@ input[type="file"] { width: 100%; height: 42px; border: 1px dashed #33405a; bord
 .reference-label { display: flex; align-items: center; gap: 5px; margin-right: 2px; }
 .reference-dot { width: 5px; height: 5px; border-radius: 50%; background: #d280ff; box-shadow: 0 0 7px rgba(210,128,255,.5); }
 .reference-bar input { width: 82px; accent-color: #986bff; }
-.reference-bar > span:last-child { width: 26px; text-align: right; font-family: "SFMono-Regular", Menlo, monospace; }
+#overlayValue { width: 26px; text-align: right; font-family: "SFMono-Regular", Menlo, monospace; }
+.diff-match-value { margin-left: 6px; padding: 2px 7px; border-radius: 8px; font-family: "SFMono-Regular", Menlo, monospace; background: #182134; color: #abb5c9; }
+.diff-match-value[data-severity="excellent"] { color: #4ade80; }
+.diff-match-value[data-severity="good"] { color: #a3e635; }
+.diff-match-value[data-severity="fair"] { color: #facc15; }
+.diff-match-value[data-severity="poor"] { color: #f87171; }
 
 .preview-canvas { flex: 1; min-height: 598px; overflow: auto; position: relative; background-color: #070b12; transition: background-image .15s ease; }
 .preview-canvas.grid-enabled {

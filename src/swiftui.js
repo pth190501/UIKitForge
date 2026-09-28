@@ -2,7 +2,7 @@ import { formatNumber, parseRgba, swiftFontWeight, swiftString } from './compile
 
 // Sinh SwiftUI MVVM-R từ cùng IR với UIKit. Router dùng UIHostingController để chạy giống nhau từ iOS 13,
 // tránh phải tách NavigationView (13) / NavigationStack (16).
-export function generateSwiftUIFiles({ rootClass, mainIR, componentIRs = [], deploymentTarget = 13 }) {
+export function generateSwiftUIFiles({ rootClass, mainIR, componentIRs = [], deploymentTarget = 13, colorRegistry }) {
   const base = rootClass.replace(/View$/, '') || rootClass
   const names = { view: `${base}View`, viewModel: `${base}ViewModel`, router: `${base}Router` }
   const api = {
@@ -12,12 +12,12 @@ export function generateSwiftUIFiles({ rootClass, mainIR, componentIRs = [], dep
   }
   const texts = []
   const files = [
-    swiftFile(`SwiftUI/${base}/${names.view}.swift`, generateScreenView(names, mainIR, api, texts), 'main'),
+    swiftFile(`SwiftUI/${base}/${names.view}.swift`, generateScreenView(names, mainIR, api, texts, colorRegistry), 'main'),
     swiftFile(`SwiftUI/${base}/${names.viewModel}.swift`, generateViewModel(names, texts, api), 'main'),
     swiftFile(`SwiftUI/${base}/${names.router}.swift`, generateRouter(names), 'main')
   ]
   for (const { className, ir } of componentIRs) {
-    files.push(swiftFile(`SwiftUI/Components/${className}.swift`, generateComponentView(className, ir, api), 'component'))
+    files.push(swiftFile(`SwiftUI/Components/${className}.swift`, generateComponentView(className, ir, api, colorRegistry), 'component'))
   }
   return files
 }
@@ -26,8 +26,8 @@ function swiftFile(path, content, kind) {
   return { path, name: path.split('/').pop(), language: 'swift', content, kind, target: 'swiftui' }
 }
 
-function generateScreenView(names, root, api, texts) {
-  const ctx = createContext(api, texts)
+function generateScreenView(names, root, api, texts, colorRegistry) {
+  const ctx = createContext(api, texts, colorRegistry)
   const body = expression(renderContent(root, ctx, true), [api.ignoresSafeArea ? '.ignoresSafeArea()' : '.edgesIgnoringSafeArea(.all)'])
   const property = api.observation ? `    let viewModel: ${names.viewModel}` : `    @ObservedObject var viewModel: ${names.viewModel}`
   const preview = api.observation
@@ -36,8 +36,8 @@ function generateScreenView(names, root, api, texts) {
   return `import SwiftUI\n\nstruct ${names.view}: View {\n${property}\n\n    var body: some View {\n${indent(body, 2).join('\n')}\n    }\n}\n${sectionsExtension(names.view, ctx)}\n${preview}\n`
 }
 
-function generateComponentView(className, root, api) {
-  const ctx = createContext(api, null)
+function generateComponentView(className, root, api, colorRegistry) {
+  const ctx = createContext(api, null, colorRegistry)
   const body = renderContent(root, ctx, true)
   const preview = api.observation
     ? `#Preview {\n    ${className}()\n}`
@@ -60,8 +60,8 @@ function generateRouter(names) {
   return `import SwiftUI\nimport UIKit\n\nfinal class ${names.router} {\n    weak var viewController: UIViewController?\n\n    static func makeViewController() -> UIViewController {\n        let router = ${names.router}()\n        let viewModel = ${names.viewModel}(router: router)\n        let viewController = UIHostingController(rootView: ${names.view}(viewModel: viewModel))\n        router.viewController = viewController\n        return viewController\n    }\n}\n`
 }
 
-function createContext(api, texts) {
-  return { api, texts, sections: [], used: new Set(['body', 'viewModel']) }
+function createContext(api, texts, colorRegistry) {
+  return { api, texts, colorRegistry, sections: [], used: new Set(['body', 'viewModel']) }
 }
 
 function uniqueName(ctx, base) {
@@ -90,12 +90,12 @@ function renderContent(node, ctx, isRoot = false, sizeModifiers = []) {
   }
   if (node.kind === 'label') {
     const [base, ...modifiers] = labelLines(node, ctx)
-    return expression([base], [...modifiers, ...sizeModifiers, ...styleModifiers(node, false)])
+    return expression([base], [...modifiers, ...sizeModifiers, ...styleModifiers(node, false, ctx)])
   }
-  if (node.kind === 'image') return expression([`Image(${swiftString(node.outlet)})`], ['.resizable()', '.scaledToFit()', ...sizeModifiers, ...styleModifiers(node, true)])
+  if (node.kind === 'image') return expression([`Image(${swiftString(node.outlet)})`], ['.resizable()', '.scaledToFit()', ...sizeModifiers, ...styleModifiers(node, true, ctx)])
   if (node.kind === 'component') return expression([`${node.className}()`], sizeModifiers)
   const { base, modifiers } = containerLines(node, ctx)
-  return expression(base, [...modifiers, ...sizeModifiers, ...styleModifiers(node, true)])
+  return expression(base, [...modifiers, ...sizeModifiers, ...styleModifiers(node, true, ctx)])
 }
 
 // SwiftFormat: modifier sau view một dòng thì thụt vào; sau block kết thúc bằng "}" thì thẳng hàng.
@@ -117,7 +117,7 @@ function labelLines(node, ctx) {
   } else {
     lines.push(`.font(.system(size: ${formatNumber(style.fontSize)}, weight: .${swiftFontWeight(style.fontWeight)}))`)
   }
-  if (style.textColor) lines.push(`${ctx.api.foregroundStyle ? '.foregroundStyle' : '.foregroundColor'}(${color(style.textColor)})`)
+  if (style.textColor) lines.push(`${ctx.api.foregroundStyle ? '.foregroundStyle' : '.foregroundColor'}(${color(ctx, style.textColor, `${node.outlet}Text`)})`)
   if (style.textAlign === 'center' || style.textAlign === 'right') lines.push(`.multilineTextAlignment(${style.textAlign === 'center' ? '.center' : '.trailing'})`)
   if (style.numberOfLines === 1) lines.push('.lineLimit(1)')
   return lines
@@ -198,16 +198,17 @@ function pinnedAxis(start, end, center, size) {
   return { align: 'start', start: start?.constant || 0, size: fixedSize }
 }
 
-function styleModifiers(node, includeShape) {
+function styleModifiers(node, includeShape, ctx) {
   const { style } = node
+  const hint = node.outlet || 'root'
   const lines = []
-  if (style.background) lines.push(`.background(${color(style.background)})`)
+  if (style.background) lines.push(`.background(${color(ctx, style.background, `${hint}Background`)})`)
   if (includeShape && style.radius > 0) lines.push(`.clipShape(RoundedRectangle(cornerRadius: ${formatNumber(style.radius)}))`)
   if (includeShape && style.borderColor && style.borderWidth > 0) {
     lines.push(
       '.overlay(',
       `    RoundedRectangle(cornerRadius: ${formatNumber(style.radius || 0)})`,
-      `        .stroke(${color(style.borderColor)}, lineWidth: ${formatNumber(style.borderWidth)})`,
+      `        .stroke(${color(ctx, style.borderColor, `${hint}Border`)}, lineWidth: ${formatNumber(style.borderWidth)})`,
       ')'
     )
   }
@@ -215,7 +216,7 @@ function styleModifiers(node, includeShape) {
     const { shadow } = style
     lines.push(
       '.shadow(',
-      `    color: ${color(shadow.color || 'rgba(0, 0, 0, 0.2)')},`,
+      `    color: ${color(ctx, shadow.color || 'rgba(0, 0, 0, 0.2)', `${hint}Shadow`)},`,
       `    radius: ${formatNumber(shadow.blur / 2)},`,
       `    x: ${formatNumber(shadow.x)},`,
       `    y: ${formatNumber(shadow.y)}`,
@@ -273,7 +274,14 @@ function edgeInsets({ top = 0, leading = 0, bottom = 0, trailing = 0 }) {
   return `.padding(EdgeInsets(top: ${values[0]}, leading: ${values[1]}, bottom: ${values[2]}, trailing: ${values[3]}))`
 }
 
-function color(rgba) {
+// Color Asset dùng chung với UIKit (cùng colorRegistry) để bật Dark Mode thật qua Colors.xcassets thay vì
+// literal Color(red:...) không đổi theo appearance. Không có registry (gọi lẻ ngoài luồng compile) thì fallback literal.
+function color(ctx, rgba, hint) {
+  if (!ctx.colorRegistry) return literalColor(rgba)
+  return `Color(${swiftString(ctx.colorRegistry.register(rgba, hint))})`
+}
+
+function literalColor(rgba) {
   const c = parseRgba(rgba) || { r: 0, g: 0, b: 0, a: 1 }
   const unit = value => Number(Math.max(0, Math.min(1, value)).toFixed(3))
   return `Color(red: ${unit(c.r)}, green: ${unit(c.g)}, blue: ${unit(c.b)}, opacity: ${unit(c.a)})`

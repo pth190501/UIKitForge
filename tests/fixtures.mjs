@@ -36,6 +36,44 @@ export const layoutScreen = {
   }
 }
 
+// Mô phỏng Figma "Feed/ News" (31775:52174): con trực tiếp là SLOT, có instance ẩn (Ellipsis) và text tiếng Việt.
+export const feedSlotScreen = {
+  root: {
+    id: '31775:52174', type: 'INSTANCE', componentId: 'feed', name: 'Feed/ News', layoutMode: 'VERTICAL', itemSpacing: 12,
+    paddingLeft: 12, paddingRight: 12, paddingTop: 12, paddingBottom: 12, cornerRadius: 20,
+    fills: [{ type: 'SOLID', color: { r: 1, g: 1, b: 1, a: 1 } }], ...box(0, 0, 343, 346),
+    children: [
+      {
+        id: 'I1;1', type: 'SLOT', name: 'Header', layoutMode: 'HORIZONTAL', layoutSizingHorizontal: 'FILL', layoutSizingVertical: 'HUG', ...box(12, 12, 319, 40),
+        children: [
+          {
+            id: 'I1;2', type: 'FRAME', name: 'Stack', layoutMode: 'HORIZONTAL', itemSpacing: 8, layoutSizingHorizontal: 'FILL', layoutSizingVertical: 'HUG', ...box(12, 12, 319, 40),
+            children: [
+              { id: 'I1;3', type: 'INSTANCE', componentId: 'avatar', name: 'Emi/ Avatar', layoutSizingHorizontal: 'FIXED', layoutSizingVertical: 'FIXED', ...box(12, 12, 40, 40),
+                children: [{ id: 'I1;3;1', type: 'ELLIPSE', name: 'Circle', fills: [{ type: 'SOLID', color: { r: 0.9, g: 0.9, b: 1, a: 1 } }], ...box(12, 12, 40, 40) }] },
+              { id: 'I1;4', type: 'FRAME', name: 'Content', layoutMode: 'VERTICAL', itemSpacing: 2, layoutSizingHorizontal: 'FILL', layoutSizingVertical: 'HUG', ...box(60, 13, 271, 38),
+                children: [
+                  text('I1;5', 'Emi bảo trì', 60, 13, 67, 20, { layoutSizingHorizontal: 'HUG', layoutSizingVertical: 'HUG' }),
+                  text('I1;6', '20/04/2026', 60, 35, 64, 16, { layoutSizingHorizontal: 'HUG', layoutSizingVertical: 'HUG' })
+                ] }
+            ]
+          },
+          { id: 'I1;7', type: 'INSTANCE', componentId: 'ellipsis', name: 'Ellipsis-horizontal', visible: false, ...box(307, 12, 24, 24),
+            children: [{ id: 'I1;7;1', type: 'VECTOR', name: 'Dots', ...box(307, 12, 24, 24) }] }
+        ]
+      },
+      {
+        id: 'I1;8', type: 'SLOT', name: 'Content', layoutMode: 'VERTICAL', itemSpacing: 2, layoutSizingHorizontal: 'FILL', layoutSizingVertical: 'HUG', ...box(12, 64, 319, 98),
+        children: [
+          text('I1;9', 'Emi báo lịch bảo trì mạng hôm nay', 12, 64, 319, 24, { layoutSizingHorizontal: 'FILL', layoutSizingVertical: 'HUG' }),
+          text('I1;10', 'Khu vực Long Biên tạm ngưng kết nối.', 12, 90, 319, 72, { layoutSizingHorizontal: 'FILL', layoutSizingVertical: 'HUG' })
+        ]
+      },
+      { id: 'I1;11', type: 'RECTANGLE', name: 'image 2250', cornerRadius: 12, fills: [{ type: 'IMAGE', imageRef: 'feed' }], layoutSizingHorizontal: 'FILL', layoutSizingVertical: 'FIXED', ...box(12, 174, 319, 160) }
+    ]
+  }
+}
+
 // Màn hình có component instance (stroke, shadow, image, text có dấu nháy) cho test SwiftUI.
 export const cardScreen = { root: { id: '1:1', type: 'FRAME', name: 'Home', layoutMode: 'VERTICAL', itemSpacing: 12, paddingLeft: 16, paddingRight: 16, paddingTop: 16, paddingBottom: 16,
   fills: [{ type: 'SOLID', color: { r: 0.96, g: 0.97, b: 1, a: 1 } }], absoluteBoundingBox: { x: 0, y: 0, width: 390, height: 300 },

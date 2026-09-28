@@ -1,7 +1,9 @@
 import { findComponentCandidates, firstVisibleSolidPaint } from './figma.js'
+import { createColorRegistry } from './color-registry.js'
+import { foldDiacritics } from './identifier.js'
 
 const VIEW_TYPES = new Set([
-  'FRAME', 'GROUP', 'SECTION', 'COMPONENT', 'COMPONENT_SET', 'INSTANCE',
+  'FRAME', 'GROUP', 'SECTION', 'COMPONENT', 'COMPONENT_SET', 'INSTANCE', 'SLOT',
   'RECTANGLE', 'ELLIPSE', 'VECTOR', 'BOOLEAN_OPERATION', 'STAR', 'POLYGON', 'LINE'
 ])
 
@@ -24,6 +26,7 @@ export function compileUIKit(figmaData, requestedRootClass = '', options = {}) {
     componentMap.set(componentId, { className, source: node })
   }
 
+  const colorRegistry = createColorRegistry()
   const files = []
   const components = []
   const componentIRs = []
@@ -32,9 +35,9 @@ export function compileUIKit(figmaData, requestedRootClass = '', options = {}) {
     dedupeOutlets(ir)
     ensureUniqueIds(ir)
     files.push(
-      { path: `Components/${entry.className}/${entry.className}.swift`, name: `${entry.className}.swift`, language: 'swift', content: generateSwift(entry.className, ir), kind: 'component', target: 'uikit-xib' },
+      { path: `Components/${entry.className}/${entry.className}.swift`, name: `${entry.className}.swift`, language: 'swift', content: generateSwift(entry.className, ir, colorRegistry), kind: 'component', target: 'uikit-xib' },
       { path: `Components/${entry.className}/${entry.className}.xib`, name: `${entry.className}.xib`, language: 'xml', content: generateXib(entry.className, ir, deploymentTarget), kind: 'component', target: 'uikit-xib' },
-      { path: `UIKit-Code/Components/${entry.className}/${entry.className}.swift`, name: `${entry.className}.swift`, language: 'swift', content: generateSwiftProgrammatic(entry.className, ir), kind: 'component', target: 'uikit-code' }
+      { path: `UIKit-Code/Components/${entry.className}/${entry.className}.swift`, name: `${entry.className}.swift`, language: 'swift', content: generateSwiftProgrammatic(entry.className, ir, colorRegistry), kind: 'component', target: 'uikit-code' }
     )
     components.push({ componentId, className: entry.className, sourceName: entry.source.name || 'Component' })
     componentIRs.push({ className: entry.className, ir })
@@ -45,12 +48,21 @@ export function compileUIKit(figmaData, requestedRootClass = '', options = {}) {
   ensureUniqueIds(mainIR)
   files.unshift(
     { path: `${rootClass}/${rootClass}.xib`, name: `${rootClass}.xib`, language: 'xml', content: generateXib(rootClass, mainIR, deploymentTarget), kind: 'main', target: 'uikit-xib' },
-    { path: `${rootClass}/${rootClass}.swift`, name: `${rootClass}.swift`, language: 'swift', content: generateSwift(rootClass, mainIR), kind: 'main', target: 'uikit-xib' },
-    { path: `UIKit-Code/${rootClass}/${rootClass}.swift`, name: `${rootClass}.swift`, language: 'swift', content: generateSwiftProgrammatic(rootClass, mainIR), kind: 'main', target: 'uikit-code' }
+    { path: `${rootClass}/${rootClass}.swift`, name: `${rootClass}.swift`, language: 'swift', content: generateSwift(rootClass, mainIR, colorRegistry), kind: 'main', target: 'uikit-xib' },
+    { path: `UIKit-Code/${rootClass}/${rootClass}.swift`, name: `${rootClass}.swift`, language: 'swift', content: generateSwiftProgrammatic(rootClass, mainIR, colorRegistry), kind: 'main', target: 'uikit-code' }
   )
 
   warnings.push(...collectLayoutWarnings(mainIR))
-  return { rootClass, deploymentTarget, sourceRoot, previewRoot: mainIR, files, components, componentIRs, warnings: [...new Set(warnings)] }
+  for (const type of collectUnknownContainerTypes(sourceRoot)) {
+    warnings.push(`Figma node type ${type} is not natively supported; it was compiled as a plain container UIView with its children kept.`)
+  }
+  if (colorRegistry.entries().length) {
+    warnings.push('Colors.xcassets was generated with the Dark Appearance set to the same value as Any Appearance (Figma has no dark variant). Edit the color sets in Xcode for a real dark palette.')
+  }
+  return {
+    rootClass, deploymentTarget, sourceRoot, previewRoot: mainIR, files, components, componentIRs,
+    colorRegistry, colors: colorRegistry.entries(), warnings: [...new Set(warnings)]
+  }
 }
 
 function pickRenderableRoot(root, warnings) {
@@ -135,7 +147,22 @@ function visibleRenderableChildren(node) {
 }
 
 function isRenderable(node) {
-  return node.type === 'TEXT' || VIEW_TYPES.has(node.type)
+  return node.type === 'TEXT' || VIEW_TYPES.has(node.type) || isUnknownContainer(node)
+}
+
+// Figma thêm node type mới theo thời gian (SLOT từng bị bỏ qua như vậy) — node lạ nhưng có con vẫn là
+// container, loại nó đi sẽ mất im lặng cả nhánh con (label, component...). Dựng thành UIView thường + cảnh báo.
+function isUnknownContainer(node) {
+  return node.type !== 'TEXT' && !VIEW_TYPES.has(node.type) && (node.children || []).length > 0
+}
+
+function collectUnknownContainerTypes(node, types = new Set()) {
+  for (const child of node.children || []) {
+    if (child.visible === false) continue
+    if (isUnknownContainer(child)) types.add(child.type)
+    collectUnknownContainerTypes(child, types)
+  }
+  return types
 }
 
 function inferKind(node, renderableChildren = visibleRenderableChildren(node)) {
@@ -357,49 +384,58 @@ function inferVertical(frame, parentHeight, bottom) {
   return 'TOP'
 }
 
-function generateSwift(className, root) {
+function generateSwift(className, root, colorRegistry) {
   const descendants = flatten(root).slice(1)
   const outletLines = descendants.map(node => `    @IBOutlet private weak var ${node.outlet}: ${swiftType(node)}!`).join('\n')
   // ponytail: không bỏ background/text/textColor/numberOfLines dù XIB đã có — Web Preview's live-edit
   // (src/preview.js applySwiftPreview) parse các dòng này trực tiếp từ Swift, xoá đi sẽ hỏng tính năng.
-  const styleLines = generateSwiftStyleLines(root, { includeStatic: true, rootRef: 'contentView' })
+  const styleLines = generateSwiftStyleLines(root, { includeStatic: true, rootRef: 'contentView', colorRegistry })
   return `import UIKit\n\nfinal class ${className}: UIView {\n    @IBOutlet private var contentView: UIView!${outletLines ? `\n${outletLines}` : ''}\n\n    override init(frame: CGRect) {\n        super.init(frame: frame)\n        commonInit()\n    }\n\n    required init?(coder: NSCoder) {\n        super.init(coder: coder)\n        commonInit()\n    }\n\n    private func commonInit() {\n        Bundle(for: Self.self).loadNibNamed(String(describing: Self.self), owner: self, options: nil)\n        guard let contentView else { return }\n        addSubview(contentView)\n        contentView.translatesAutoresizingMaskIntoConstraints = false\n        NSLayoutConstraint.activate([\n            contentView.leadingAnchor.constraint(equalTo: leadingAnchor),\n            contentView.trailingAnchor.constraint(equalTo: trailingAnchor),\n            contentView.topAnchor.constraint(equalTo: topAnchor),\n            contentView.bottomAnchor.constraint(equalTo: bottomAnchor)\n        ])\n        applyGeneratedStyle()\n    }\n\n    /// UIKitForge watches common UIKit assignments in this method and mirrors them in Web Preview.\n    /// Native validation remains the final source of truth once the macOS agent is connected.\n    private func applyGeneratedStyle() {\n${styleLines || '        // No runtime-only styles were required for this node.'}\n    }\n}\n`
 }
 
 // includeStatic: bật khi không có XIB đi kèm (biến thể programmatic) — lúc đó Swift là nguồn duy nhất cho
 // background/text/textColor/numberOfLines/textAlignment/contentMode; XIB variant giữ false để tránh set trùng.
-function generateSwiftStyleLines(root, { includeStatic = false, rootRef = 'contentView' } = {}) {
+function generateSwiftStyleLines(root, { includeStatic = false, rootRef = 'contentView', colorRegistry } = {}) {
   const lines = []
   for (const [index, node] of flatten(root).entries()) {
     const targetRef = index === 0 ? rootRef : node.outlet
     const target = targetRef === 'self' ? '' : `${targetRef}.` // self ngầm định — tránh redundantSelf của SwiftFormat
+    const hint = node.outlet || 'root'
     const style = node.style || {}
-    if (includeStatic && style.background) lines.push(`        ${target}backgroundColor = ${rgbaToSwift(style.background)}`)
+    if (includeStatic && style.background) lines.push(`        ${target}backgroundColor = ${namedColor(colorRegistry, style.background, `${hint}Background`)}`)
     if (style.radius > 0) {
       lines.push(`        ${target}layer.cornerRadius = ${formatNumber(style.radius)}`)
       lines.push(`        ${target}layer.masksToBounds = true`)
     }
     if (style.borderColor && style.borderWidth > 0) {
-      lines.push(`        ${target}layer.borderColor = ${rgbaToSwift(style.borderColor)}.cgColor`)
+      lines.push(`        ${target}layer.borderColor = ${cgColor(namedColor(colorRegistry, style.borderColor, `${hint}Border`))}`)
       lines.push(`        ${target}layer.borderWidth = ${formatNumber(style.borderWidth)}`)
     }
     if (style.opacity < 1) lines.push(`        ${target}alpha = ${formatNumber(style.opacity)}`)
     if (node.kind === 'label') {
       if (includeStatic) {
         lines.push(`        ${target}text = ${swiftString(node.text)}`)
-        if (style.textColor) lines.push(`        ${target}textColor = ${rgbaToSwift(style.textColor)}`)
+        if (style.textColor) lines.push(`        ${target}textColor = ${namedColor(colorRegistry, style.textColor, `${hint}Text`)}`)
         lines.push(`        ${target}numberOfLines = ${style.numberOfLines}`)
         if (style.textAlign !== 'left') lines.push(`        ${target}textAlignment = .${swiftTextAlignment(style.textAlign)}`)
       }
       lines.push(`        ${target}font = ${swiftFontExpression(style)}`)
+      // adjustsFontForContentSizeCategory: UIFont.systemFont không tự scale theo Dynamic Type như SwiftUI's
+      // .system(size:) — phải bật cờ này + UIFontMetrics ở trên thì UILabel mới tôn trọng cỡ chữ hệ thống.
+      lines.push(`        ${target}adjustsFontForContentSizeCategory = true`)
     }
     if (node.kind === 'image' && includeStatic) {
       lines.push(`        ${target}contentMode = .scaleAspectFit`)
       // Tên asset = outlet, khớp với Image(...) bên SwiftUI — xem generateUIKitAssets ở figma.js/main.js.
       lines.push(`        ${target}image = UIImage(named: ${swiftString(node.outlet)})`)
+      // VoiceOver: layer Figma không phân biệt ảnh trang trí và ảnh nội dung, nên coi mọi UIImageView là
+      // nội dung có nghĩa và gán accessibilityLabel từ tên layer; tên vô nghĩa (Rectangle 12, Frame 3...)
+      // vẫn còn hơn im lặng hoàn toàn với VoiceOver.
+      lines.push(`        ${target}isAccessibilityElement = true`)
+      lines.push(`        ${target}accessibilityLabel = ${swiftString(humanizeLayerName(node.name))}`)
     }
     if (style.shadow) {
-      lines.push(`        ${target}layer.shadowColor = ${rgbaToSwift(style.shadow.color || 'rgba(0, 0, 0, 0.2)')}.cgColor`)
+      lines.push(`        ${target}layer.shadowColor = ${cgColor(namedColor(colorRegistry, style.shadow.color || 'rgba(0, 0, 0, 0.2)', `${hint}Shadow`))}`)
       lines.push(`        ${target}layer.shadowOpacity = ${formatNumber(alphaFromRgba(style.shadow.color || 'rgba(0,0,0,0.2)'))}`)
       lines.push(`        ${target}layer.shadowOffset = CGSize(width: ${formatNumber(style.shadow.x)}, height: ${formatNumber(style.shadow.y)})`)
       lines.push(`        ${target}layer.shadowRadius = ${formatNumber(style.shadow.blur / 2)}`)
@@ -411,17 +447,49 @@ function generateSwiftStyleLines(root, { includeStatic = false, rootRef = 'conte
 
 function swiftFontExpression(style) {
   const weight = swiftFontWeight(style.fontWeight)
-  if (style.fontFamily && style.fontFamily !== 'System') {
-    return `UIFont(name: ${swiftString(style.fontFamily)}, size: ${formatNumber(style.fontSize)}) ?? .systemFont(ofSize: ${formatNumber(style.fontSize)}, weight: .${weight})`
+  const base = style.fontFamily && style.fontFamily !== 'System'
+    ? `UIFont(name: ${swiftString(style.fontFamily)}, size: ${formatNumber(style.fontSize)}) ?? .systemFont(ofSize: ${formatNumber(style.fontSize)}, weight: .${weight})`
+    : `UIFont.systemFont(ofSize: ${formatNumber(style.fontSize)}, weight: .${weight})`
+  // UIFontMetrics giữ đúng size Figma ở cỡ chữ mặc định nhưng vẫn scale theo Dynamic Type,
+  // thay vì .systemFont cố định — xem ghi chú adjustsFontForContentSizeCategory ở nơi gọi.
+  // Xuống dòng trước .scaledFont: viết liền 1 dòng vượt 120 ký tự (line_length mặc định của SwiftLint).
+  return `UIFontMetrics(forTextStyle: .${nearestTextStyle(style.fontSize, style.fontWeight)})\n            .scaledFont(for: ${base})`
+}
+
+// Khớp fontSize Figma với UIFont.TextStyle gần nhất để UIFontMetrics scale đúng đường cong Dynamic Type của Apple.
+function nearestTextStyle(fontSize, fontWeight) {
+  const sizes = [
+    ['largeTitle', 34], ['title1', 28], ['title2', 22], ['title3', 20],
+    ['body', 17], ['callout', 16], ['subheadline', 15],
+    ['footnote', 13], ['caption1', 12], ['caption2', 11]
+  ]
+  let best = sizes[sizes.length - 1]
+  let bestDiff = Infinity
+  for (const entry of sizes) {
+    const diff = Math.abs(entry[1] - (fontSize || 14))
+    if (diff < bestDiff) { bestDiff = diff; best = entry }
   }
-  return `.systemFont(ofSize: ${formatNumber(style.fontSize)}, weight: .${weight})`
+  if (best[0] === 'body' && (fontWeight || 400) >= 600) return 'headline'
+  return best[0]
+}
+
+// Tên layer Figma ("Rectangle 12", "hero_image") không phải câu văn đọc được — tách theo case/dấu gạch
+// dưới thành từ rồi viết hoa chữ đầu để VoiceOver đọc tự nhiên hơn một chút so với đọc nguyên tên kỹ thuật.
+function humanizeLayerName(value) {
+  const words = String(value || 'Image')
+    .replace(/([a-z0-9])([A-Z])/g, '$1 $2')
+    .replace(/[_-]+/g, ' ')
+    .trim()
+    .split(/\s+/)
+    .filter(Boolean)
+  return words.map(word => word.charAt(0).toUpperCase() + word.slice(1)).join(' ') || 'Image'
 }
 
 function swiftTextAlignment(value) { if (value === 'center') return 'center'; if (value === 'right') return 'right'; if (value === 'justified') return 'justified'; return 'natural' }
 
 // Sinh view hoàn toàn bằng code (không XIB): cùng IR, cùng constraint format với generateXib,
 // chỉ đổi cách emit sang NSLayoutConstraint anchor. Dùng khi user chọn output UIKit-Code.
-export function generateSwiftProgrammatic(className, root) {
+export function generateSwiftProgrammatic(className, root, colorRegistry) {
   const descendants = flatten(root).slice(1)
   const refs = new Map([[root.id, 'self']])
   const figmaRefs = new Map([[root.figmaId, 'self']])
@@ -459,7 +527,7 @@ export function generateSwiftProgrammatic(className, root) {
   for (const child of pinned) initLines.push(...swiftConstraintLines('self', refs.get(child.id), child.constraints, refs, figmaRefs))
   for (const child of pinned) pushProgrammaticChildMethod(child, refs.get(child.id), refs, figmaRefs, methods, initLines)
 
-  const styleLines = generateSwiftStyleLines(root, { includeStatic: true, rootRef: 'self' })
+  const styleLines = generateSwiftStyleLines(root, { includeStatic: true, rootRef: 'self', colorRegistry })
   const methodBlocks = methods.map(m => `\n    private func ${m.name}() {\n${m.lines.join('\n')}\n    }\n`).join('')
   return `import UIKit\n\nfinal class ${className}: UIView {\n${propertyLines.join('\n')}\n\n    override init(frame: CGRect) {\n        super.init(frame: frame)\n        commonInit()\n    }\n\n    required init?(coder: NSCoder) {\n        super.init(coder: coder)\n        commonInit()\n    }\n\n    private func commonInit() {\n${initLines.join('\n')}\n        applyGeneratedStyle()\n    }\n${methodBlocks}\n    private func applyGeneratedStyle() {\n${styleLines || '        // No runtime-only styles were required for this node.'}\n    }\n}\n`
 }
@@ -665,6 +733,11 @@ function collectLayoutWarnings(root) {
     if (node.type === 'VECTOR' || node.type === 'BOOLEAN_OPERATION') warnings.push(`${node.name}: vector geometry is still represented as a UIView placeholder; SVG/PDF asset export is the next compiler stage.`)
     if (node.kind === 'image') warnings.push(`${node.name}: image fill is represented as UIImageView but the binary asset is not exported yet.`)
     if (node.meta?.preservesChildrenOverImageFill) warnings.push(`${node.name}: Figma uses an image fill on a container. UIKitForge preserved its child hierarchy instead of collapsing the container into UIImageView; the background image asset is not exported yet.`)
+    // HIG: vùng chạm tối thiểu 44x44pt. Component instance (INSTANCE trong Figma) thường là nút/control
+    // tương tác, nên đây là proxy hợp lý dù compiler chưa model được khái niệm "tappable" tường minh.
+    if (node.kind === 'component' && (node.frame?.width < 44 || node.frame?.height < 44)) {
+      warnings.push(`${node.name}: component is ${formatNumber(node.frame.width)}x${formatNumber(node.frame.height)}pt, below Apple's 44x44pt minimum tap target. Consider padding the hit area if this is interactive.`)
+    }
   }
   return warnings
 }
@@ -703,14 +776,14 @@ function swiftType(node) {
 }
 
 function sanitizeClassName(value, fallback) {
-  const parts = String(value || '').replace(/[^A-Za-z0-9]+/g, ' ').trim().split(/\s+/).filter(Boolean)
+  const parts = foldDiacritics(value || '').replace(/[^A-Za-z0-9]+/g, ' ').trim().split(/\s+/).filter(Boolean)
   let result = parts.map(part => part.charAt(0).toUpperCase() + part.slice(1)).join('') || fallback
   if (/^[0-9]/.test(result)) result = `View${result}`
   return result
 }
 
 function sanitizeOutletName(value) {
-  const parts = String(value || '').replace(/[^A-Za-z0-9]+/g, ' ').trim().split(/\s+/).filter(Boolean)
+  const parts = foldDiacritics(value || '').replace(/[^A-Za-z0-9]+/g, ' ').trim().split(/\s+/).filter(Boolean)
   let result = parts.map((part, index) => index === 0 ? part.charAt(0).toLowerCase() + part.slice(1) : part.charAt(0).toUpperCase() + part.slice(1)).join('') || 'generatedView'
   if (/^[0-9]/.test(result)) result = `view${result}`
   if (SWIFT_KEYWORDS.has(result)) result += 'View'
@@ -744,6 +817,20 @@ function paintColorToRgba(color) {
 function rgbaToSwift(rgba) {
   const c = parseRgba(rgba) || { r: 0, g: 0, b: 0, a: 1 }
   return `UIColor(red: ${unit(c.r)}, green: ${unit(c.g)}, blue: ${unit(c.b)}, alpha: ${unit(c.a)})`
+}
+
+// Tham chiếu Color Asset (Colors.xcassets) thay vì literal UIColor(red:...) để hỗ trợ Dark Mode thật qua Xcode.
+// colorRegistry có thể null khi gọi generateSwiftStyleLines ngoài luồng compile chính (ví dụ test lẻ) — fallback
+// về literal color để không throw.
+function namedColor(colorRegistry, rgba, hint) {
+  if (!colorRegistry) return rgbaToSwift(rgba)
+  return `UIColor(named: ${swiftString(colorRegistry.register(rgba, hint))})`
+}
+
+// UIColor(named:) là failable init (UIColor?) — phải optional-chain `.cgColor`; literal UIColor(red:...) thì không.
+// borderColor/shadowColor nhận CGColor? nên gán nil (asset thiếu) vẫn compile và chỉ mất màu, không crash.
+function cgColor(uiColorExpression) {
+  return uiColorExpression.startsWith('UIColor(named:') ? `${uiColorExpression}?.cgColor` : `${uiColorExpression}.cgColor`
 }
 
 export function parseRgba(value) {

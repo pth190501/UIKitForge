@@ -182,12 +182,18 @@ export function findComponentCandidates(root) {
   const byComponentId = new Map()
   const explicitComponents = []
 
-  walkFigma(root, node => {
+  // Bỏ cả nhánh đang ẩn (visible:false): compiler không vẽ chúng, nên sinh class component cho chúng
+  // chỉ tạo file thừa trong ZIP (vd nút Ellipsis ẩn trong header).
+  // Root luôn được duyệt kể cả khi đang ẩn — user có thể trỏ URL thẳng vào 1 node ẩn và compiler vẫn dựng nó.
+  const visit = (node, isRoot = false) => {
+    if (!node || (!isRoot && node.visible === false)) return
     if (node.type === 'COMPONENT') explicitComponents.push(node)
     if (node.type === 'INSTANCE' && node.componentId && !byComponentId.has(node.componentId)) {
       byComponentId.set(node.componentId, node)
     }
-  })
+    for (const child of node.children || []) visit(child)
+  }
+  visit(root, true)
 
   return {
     explicitComponents,

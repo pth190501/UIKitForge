@@ -4,7 +4,9 @@ import './image-mode.css'
 import { fetchFigmaSelection, parseFigmaUrl, summarizeFigmaTree } from './figma.js'
 import { compileUIKit } from './compiler.js'
 import { analyzeScreenshot } from './screenshot.js'
-import { applySwiftPreview, describeNode, renderUIKitPreview, walkPreview } from './preview.js'
+import { applySwiftPreview, describeNode, rasterizePreviewToCanvas, renderUIKitPreview, walkPreview } from './preview.js'
+import { diffImageData, diffSeverity } from './pixel-diff.js'
+import { rerootSharedMVVMFile } from './export-layout.js'
 
 const STORAGE_KEY = 'uikitforge.figmaToken'
 const SESSION_KEY = 'uikitforge.figmaToken.session'
@@ -137,6 +139,7 @@ app.innerHTML = `
           <div class="reference-label"><span class="reference-dot"></span><span>Screenshot compare</span></div>
           <input id="overlayRange" type="range" min="0" max="100" value="0" />
           <span id="overlayValue">0%</span>
+          <span id="diffMatchValue" class="diff-match-value" hidden></span>
         </div>
         <div class="preview-canvas grid-enabled" id="previewCanvas">
           <div class="preview-empty"><div class="phone-icon"></div><strong>Preview canvas is ready</strong><span>Image-only no longer needs a Figma URL.</span></div>
@@ -164,7 +167,7 @@ const refs = Object.fromEntries([
   'figmaUrl', 'rootClass', 'outputTarget', 'deploymentTarget', 'figmaToken', 'toggleToken', 'forgetToken', 'rememberToken', 'screenshotImage', 'screenshotDrop', 'screenshotName',
   'generateButton', 'demoButton', 'downloadFileButton', 'downloadAllButton', 'statusText', 'statusMetrics', 'statusProgress',
   'statusStrip', 'workspace', 'fileCount', 'filesList', 'editorLanguage', 'editorFilename', 'codeEditor', 'editorFooter',
-  'previewPanel', 'previewCanvas', 'previewTitle', 'previewSize', 'overlayRange', 'overlayValue', 'inspector', 'layersPanel',
+  'previewPanel', 'previewCanvas', 'previewTitle', 'previewSize', 'overlayRange', 'overlayValue', 'diffMatchValue', 'inspector', 'layersPanel',
   'selectionKind', 'warningsPanel', 'warningCount', 'warningsList', 'zoomOutButton', 'zoomInButton', 'zoomValue',
   'gridButton', 'outlineButton', 'safeAreaButton', 'focusPreviewButton', 'inputModeLabel', 'inputModeHint', 'modeImage', 'modeHybrid', 'modeFigma'
 ].map(id => [id, document.getElementById(id)]))
@@ -335,7 +338,9 @@ function visibleFiles() {
   const readme = compiled.readme ? [{ path: 'README.md', name: 'README.md', language: 'markdown', content: compiled.readme, kind: 'config' }] : []
   const generated = state.outputTarget === 'swiftui'
     ? (compiled.swiftUIFiles || [])
-    : compiled.files.filter(file => file.target === state.outputTarget || file.target === 'uikit')
+    : compiled.files
+        .filter(file => file.target === state.outputTarget || file.target === 'uikit')
+        .map(file => rerootSharedMVVMFile(file, state.outputTarget))
   return [...generated, ...configFiles, ...readme]
 }
 
@@ -372,7 +377,7 @@ function currentPreviewRoot() {
   if (file?.kind === 'component') { const className = file.name.replace(/\.(swift|xib)$/i, ''); return state.compiled.componentPreviews?.[className] || state.compiled.previewRoot }
   if (state.outputTarget === 'swiftui') return state.compiled.previewRoot // cú pháp SwiftUI không khớp regex applySwiftPreview (viết cho UIKit)
   const mainSwift = state.compiled.files.find(item => item.kind === 'main' && item.language === 'swift' && item.target === state.outputTarget)
-  return mainSwift ? applySwiftPreview(state.compiled.previewRoot, mainSwift.content) : state.compiled.previewRoot
+  return mainSwift ? applySwiftPreview(state.compiled.previewRoot, mainSwift.content, { namedColors: state.compiled.namedColors }) : state.compiled.previewRoot
 }
 function previewDisplayName(file, root) { return file?.kind === 'component' ? file.name.replace(/\.(swift|xib)$/i, '') : state.compiled?.rootClass || root?.name || 'UIKit layout' }
 
@@ -389,6 +394,48 @@ function renderPreview() {
     showGrid: state.showGrid, showOutlines: state.showOutlines, showSafeArea: state.showSafeArea,
     onMetrics: metrics => { state.lastScale = metrics.scale; refs.zoomValue.textContent = state.zoom === 'fit' ? `Fit ${Math.round(metrics.scale * 100)}%` : `${Math.round(metrics.scale * 100)}%`; refs.safeAreaButton.disabled = !metrics.phoneLike },
     onSelect: node => { state.selectedNodeId = node.id; renderInspector(node); renderLayers(); renderPreview() }
+  })
+  updatePixelDiff(root)
+}
+
+let diffRunToken = 0
+// So khớp pixel định lượng giữa preview đã raster và ảnh tham chiếu (xem src/pixel-diff.js).
+// Raster hoá là xấp xỉ (không dùng ibtool/Xcode thật), nên % chỉ mang tính tham khảo bố cục/màu, không phải benchmark pixel-perfect.
+async function updatePixelDiff(root) {
+  if (!state.referenceImage) { refs.diffMatchValue.hidden = true; return }
+  const token = ++diffRunToken
+  try {
+    const image = await loadImageElement(state.referenceImage)
+    const width = root.frame?.width || image.naturalWidth
+    const height = root.frame?.height || image.naturalHeight
+    if (!width || !height) return
+
+    const previewCanvas = rasterizePreviewToCanvas(root, width, height)
+    const referenceCanvas = document.createElement('canvas')
+    referenceCanvas.width = previewCanvas.width
+    referenceCanvas.height = previewCanvas.height
+    referenceCanvas.getContext('2d').drawImage(image, 0, 0, referenceCanvas.width, referenceCanvas.height)
+
+    const previewData = previewCanvas.getContext('2d').getImageData(0, 0, previewCanvas.width, previewCanvas.height).data
+    const referenceData = referenceCanvas.getContext('2d').getImageData(0, 0, referenceCanvas.width, referenceCanvas.height).data
+    const result = diffImageData(previewData, referenceData, previewCanvas.width, previewCanvas.height)
+
+    if (token !== diffRunToken) return // một lần raster mới hơn đã chạy trong lúc await
+    refs.diffMatchValue.hidden = false
+    refs.diffMatchValue.textContent = `${result.matchPercent}% match`
+    refs.diffMatchValue.dataset.severity = diffSeverity(result.diffPercent)
+    refs.diffMatchValue.title = `${result.diffPixels} / ${result.comparedPixels} pixels differ (raster approximation, not Xcode-rendered)`
+  } catch {
+    refs.diffMatchValue.hidden = true
+  }
+}
+
+function loadImageElement(src) {
+  return new Promise((resolve, reject) => {
+    const image = new Image()
+    image.onload = () => resolve(image)
+    image.onerror = reject
+    image.src = src
   })
 }
 
@@ -435,9 +482,40 @@ async function downloadAllFiles() {
   for (const file of visibleFiles()) zip.file(file.path, file.content)
   for (const asset of state.compiled.assets || []) addImageAsset(zip, asset)
   await addFigmaImageAssets(zip, state.compiled.imageAssetRefs || [], state.figmaData?.nodeImageExports)
+  addColorAssets(zip, state.compiled.colors || [])
   if (state.referenceImage) zip.file('References/source-screenshot.png', dataUrlPayload(state.referenceImage), { base64: true })
   zip.file('UIKitForge.generated.json', JSON.stringify({ rootClass: state.compiled.rootClass, components: state.compiled.components, warnings: state.compiled.warnings, source: state.figmaData?.source || null, assets: (state.compiled.assets || []).map(({ dataUrl, ...meta }) => meta) }, null, 2))
   const blob = await zip.generateAsync({ type: 'blob' }); downloadBlob(blob, `${state.compiled.rootClass}-UIKitForge.zip`)
+}
+
+// Colors.xcassets: mỗi màu UIColor(named:)/Color(named:) trong code trỏ tới 1 color set ở đây.
+// Dark Appearance mặc định giống Any Appearance (Figma chỉ có 1 bản thiết kế) — xem cảnh báo compiler
+// nhắc user tự chỉnh trong Xcode. Vẫn hơn hardcode literal vì đổi 1 chỗ là đổi cả app.
+function addColorAssets(zip, colors) {
+  if (!colors.length) return
+  zip.file('Colors.xcassets/Contents.json', JSON.stringify({ info: { author: 'UIKitForge', version: 1 } }, null, 2))
+  for (const entry of colors) addColorAsset(zip, entry)
+}
+
+function addColorAsset(zip, entry) {
+  const c = parseRgbaForXcode(entry.rgba)
+  const colorComponent = (appearance) => ({
+    idiom: 'universal',
+    ...(appearance ? { appearances: [{ appearance: 'luminosity', value: appearance }] } : {}),
+    color: { 'color-space': 'srgb', components: { red: c.hex.r, green: c.hex.g, blue: c.hex.b, alpha: c.alpha } }
+  })
+  const contents = { colors: [colorComponent(null), colorComponent('dark')], info: { author: 'UIKitForge', version: 1 } }
+  zip.file(`Colors.xcassets/${entry.name}.colorset/Contents.json`, JSON.stringify(contents, null, 2))
+}
+
+function parseRgbaForXcode(rgba) {
+  const match = String(rgba || '').match(/rgba?\(\s*([\d.]+)\s*,\s*([\d.]+)\s*,\s*([\d.]+)(?:\s*,\s*([\d.]+))?\s*\)/i)
+  const toHex = value => `0x${Math.max(0, Math.min(255, Math.round(Number(value) || 0))).toString(16).toUpperCase().padStart(2, '0')}`
+  if (!match) return { hex: { r: '0x00', g: '0x00', b: '0x00' }, alpha: '1.000' }
+  return {
+    hex: { r: toHex(match[1]), g: toHex(match[2]), b: toHex(match[3]) },
+    alpha: (match[4] == null ? 1 : Number(match[4])).toFixed(3)
+  }
 }
 
 function addImageAsset(zip, asset) {
@@ -456,11 +534,14 @@ Generated by UIKitForge · deployment target: iOS ${compiled.deploymentTarget}+
 
 ## Output layout
 
-- \`${compiled.rootClass}/\` — main screen: XIB view + Swift outlets (UIKit-XIB), plus the MVVM-R
-  \`${compiled.rootClass.replace(/View$/, '') || compiled.rootClass}ViewController/ViewModel/Router\` files,
-  shared by both UIKit variants.
-- \`UIKit-Code/\` — the same screen built entirely in code (NSLayoutConstraint, no XIB). Ship this
-  folder instead of the XIB pair above — do not include both, they declare the same class names.
+- \`${compiled.rootClass}/\` — UIKit-XIB export: XIB view + Swift outlets, plus the MVVM-R
+  \`${compiled.rootClass.replace(/View$/, '') || compiled.rootClass}ViewController/ViewModel/Router\`
+  files. Self-contained.
+- \`UIKit-Code/\` — UIKit-Code export: the same screen built entirely in code (NSLayoutConstraint, no
+  XIB), including its own copy of \`...ViewController/ViewModel/Router\` under
+  \`UIKit-Code/${compiled.rootClass}/\`. Also self-contained. Only one of these two folders is present
+  per download (whichever output you had selected) — never mix both into one Xcode target, they
+  declare the same class names.
 - \`SwiftUI/\` — an independent SwiftUI MVVM-R rewrite of the same layout.
 - \`Components/\` / \`UIKit-Code/Components/\` / \`SwiftUI/Components/\` — reusable Figma component
   instances, one pair per component.

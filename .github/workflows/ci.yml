@@ -28,6 +28,11 @@ jobs:
       - name: Test
         run: npm test
 
+      # Tách riêng bước này (dù cùng thuật toán với npm test) để check fail hiện rõ tên
+      # "Pixel-diff regression gate" trong summary CI, thay vì chìm trong bước "Test" chung chung.
+      - name: Pixel-diff regression gate
+        run: node tests/pixel-diff.test.mjs
+
       - name: Build
         run: npm run build
 
