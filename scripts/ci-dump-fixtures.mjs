@@ -2,6 +2,7 @@
 import { mkdirSync, rmSync, writeFileSync } from 'node:fs'
 import { dirname, join } from 'node:path'
 import { compileUIKit } from '../src/compiler.js'
+import { ARCHITECTURES } from '../src/uikit-router.js'
 import { cardScreen, feedSlotScreen, layoutScreen } from '../tests/fixtures.mjs'
 
 const OUT_DIR = 'ci-artifacts'
@@ -16,9 +17,11 @@ const write = (path, content) => {
 }
 
 for (const [fixtureName, data] of Object.entries(FIXTURES)) {
+  for (const architecture of ARCHITECTURES) {
   for (const deploymentTarget of TARGETS) {
-    const dir = join(OUT_DIR, `${fixtureName}-ios${deploymentTarget}`)
-    const compiled = compileUIKit(data, 'GeneratedView', { deploymentTarget })
+    // Tên thư mục kết thúc bằng -ios13/-ios17 để glob trong ci.yml (ci-artifacts/*-ios13) vẫn bắt được mọi kiến trúc.
+    const dir = join(OUT_DIR, `${fixtureName}-${architecture}-ios${deploymentTarget}`)
+    const compiled = compileUIKit(data, 'GeneratedView', { deploymentTarget, architecture })
     for (const file of compiled.files) {
       if (file.target === 'uikit-code') write(join(dir, 'uikit-code', file.path), file.content)
       else if (file.target === 'uikit-xib') write(join(dir, 'uikit-xib', file.path), file.content)
@@ -29,6 +32,7 @@ for (const [fixtureName, data] of Object.entries(FIXTURES)) {
       }
     }
     for (const file of compiled.swiftUIFiles) write(join(dir, 'swiftui', file.path), file.content)
+  }
   }
 }
 

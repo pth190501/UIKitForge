@@ -1,8 +1,10 @@
 import { formatNumber, parseRgba, swiftFontWeight, swiftString } from './compiler-core.js'
+import { normalizeArchitecture } from './uikit-router.js'
 
 // Sinh SwiftUI MVVM-R từ cùng IR với UIKit. Router dùng UIHostingController để chạy giống nhau từ iOS 13,
 // tránh phải tách NavigationView (13) / NavigationStack (16).
-export function generateSwiftUIFiles({ rootClass, mainIR, componentIRs = [], deploymentTarget = 13, colorRegistry }) {
+export function generateSwiftUIFiles({ rootClass, mainIR, componentIRs = [], deploymentTarget = 13, colorRegistry, architecture = 'mvvm-r' }) {
+  const arch = normalizeArchitecture(architecture)
   const base = rootClass.replace(/View$/, '') || rootClass
   const names = { view: `${base}View`, viewModel: `${base}ViewModel`, router: `${base}Router` }
   const api = {
@@ -10,12 +12,11 @@ export function generateSwiftUIFiles({ rootClass, mainIR, componentIRs = [], dep
     foregroundStyle: deploymentTarget >= 15,
     ignoresSafeArea: deploymentTarget >= 14
   }
-  const texts = []
-  const files = [
-    swiftFile(`SwiftUI/${base}/${names.view}.swift`, generateScreenView(names, mainIR, api, texts, colorRegistry), 'main'),
-    swiftFile(`SwiftUI/${base}/${names.viewModel}.swift`, generateViewModel(names, texts, api), 'main'),
-    swiftFile(`SwiftUI/${base}/${names.router}.swift`, generateRouter(names), 'main')
-  ]
+  // MVC: SwiftUI không có controller — text viết thẳng trong View (texts = null), chỉ sinh 1 file View.
+  const texts = arch === 'mvc' ? null : []
+  const files = [swiftFile(`SwiftUI/${base}/${names.view}.swift`, generateScreenView(names, mainIR, api, texts, colorRegistry, arch), 'main')]
+  if (arch !== 'mvc') files.push(swiftFile(`SwiftUI/${base}/${names.viewModel}.swift`, generateViewModel(names, texts, api, arch), 'main'))
+  if (arch === 'mvvm-r') files.push(swiftFile(`SwiftUI/${base}/${names.router}.swift`, generateRouter(names), 'main'))
   for (const { className, ir } of componentIRs) {
     files.push(swiftFile(`SwiftUI/Components/${className}.swift`, generateComponentView(className, ir, api, colorRegistry), 'component'))
   }
@@ -26,14 +27,17 @@ function swiftFile(path, content, kind) {
   return { path, name: path.split('/').pop(), language: 'swift', content, kind, target: 'swiftui' }
 }
 
-function generateScreenView(names, root, api, texts, colorRegistry) {
+function generateScreenView(names, root, api, texts, colorRegistry, arch = 'mvvm-r') {
   const ctx = createContext(api, texts, colorRegistry)
   const body = expression(renderContent(root, ctx, true), [api.ignoresSafeArea ? '.ignoresSafeArea()' : '.edgesIgnoringSafeArea(.all)'])
-  const property = api.observation ? `    let viewModel: ${names.viewModel}` : `    @ObservedObject var viewModel: ${names.viewModel}`
+  const property = arch === 'mvc' ? '' : api.observation ? `    let viewModel: ${names.viewModel}\n\n` : `    @ObservedObject var viewModel: ${names.viewModel}\n\n`
+  const construct = arch === 'mvc' ? `${names.view}()`
+    : arch === 'mvvm' ? `${names.view}(viewModel: ${names.viewModel}())`
+      : `${names.view}(viewModel: ${names.viewModel}(router: ${names.router}()))`
   const preview = api.observation
-    ? `#Preview {\n    ${names.view}(viewModel: ${names.viewModel}(router: ${names.router}()))\n}`
-    : `struct ${names.view}Previews: PreviewProvider {\n    static var previews: some View {\n        ${names.view}(viewModel: ${names.viewModel}(router: ${names.router}()))\n    }\n}`
-  return `import SwiftUI\n\nstruct ${names.view}: View {\n${property}\n\n    var body: some View {\n${indent(body, 2).join('\n')}\n    }\n}\n${sectionsExtension(names.view, ctx)}\n${preview}\n`
+    ? `#Preview {\n    ${construct}\n}`
+    : `struct ${names.view}Previews: PreviewProvider {\n    static var previews: some View {\n        ${construct}\n    }\n}`
+  return `import SwiftUI\n\nstruct ${names.view}: View {\n${property}    var body: some View {\n${indent(body, 2).join('\n')}\n    }\n}\n${sectionsExtension(names.view, ctx)}\n${preview}\n`
 }
 
 function generateComponentView(className, root, api, colorRegistry) {
@@ -45,7 +49,7 @@ function generateComponentView(className, root, api, colorRegistry) {
   return `import SwiftUI\n\nstruct ${className}: View {\n    var body: some View {\n${indent(body, 2).join('\n')}\n    }\n}\n${sectionsExtension(className, ctx)}\n${preview}\n`
 }
 
-function generateViewModel(names, texts, api) {
+function generateViewModel(names, texts, api, arch = 'mvvm-r') {
   const properties = texts.map(({ property, value }) => api.observation
     ? `    private(set) var ${property} = ${swiftString(value)}`
     : `    @Published private(set) var ${property} = ${swiftString(value)}`)
@@ -55,6 +59,8 @@ function generateViewModel(names, texts, api) {
     ? `import Observation\n\n@Observable\nfinal class ${names.viewModel} {`
     : `import Combine\n\nfinal class ${names.viewModel}: ObservableObject {`
   const stateBlock = properties.length ? `${properties.join('\n')}\n\n` : ''
+  // MVVM không có Router: VM chỉ giữ state text (bỏ dòng trống thừa cuối stateBlock để SwiftLint không bắt vertical_whitespace).
+  if (arch === 'mvvm') return `${header}\n${stateBlock.replace(/\n\n$/, '\n')}}\n`
   return `${header}\n${stateBlock}    private let router: ${names.router}\n\n    init(router: ${names.router}) {\n        self.router = router\n    }\n}\n`
 }
 

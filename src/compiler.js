@@ -2,17 +2,18 @@ import { compileUIKit as compileCore, sanitizeOutletName } from './compiler-core
 import { figmaPaintToCss, firstVisiblePaint } from './figma.js'
 import { applySwiftPreview } from './preview.js'
 import { generateSwiftUIFiles } from './swiftui.js'
-import { generateUIKitMVVMFiles } from './uikit-router.js'
+import { generateUIKitMVVMFiles, normalizeArchitecture } from './uikit-router.js'
 import { LINT_CONFIG_FILES } from './lint-config.js'
 
 export function compileUIKit(figmaData, requestedRootClass = '', options = {}) {
   const result = compileCore(figmaData, requestedRootClass, options)
   // Sinh SwiftUI trước bước hydrate preview vì hydrate ghi đè style/layout bằng dữ liệu CSS.
-  result.swiftUIFiles = generateSwiftUIFiles({ rootClass: result.rootClass, mainIR: result.previewRoot, componentIRs: result.componentIRs, deploymentTarget: result.deploymentTarget, colorRegistry: result.colorRegistry })
+  result.architecture = normalizeArchitecture(options.architecture)
+  result.swiftUIFiles = generateSwiftUIFiles({ rootClass: result.rootClass, mainIR: result.previewRoot, componentIRs: result.componentIRs, deploymentTarget: result.deploymentTarget, colorRegistry: result.colorRegistry, architecture: result.architecture })
   // SwiftUI đăng ký màu vào cùng registry sau khi core đã chụp `colors` — chụp lại để Colors.xcassets không thiếu màu chỉ SwiftUI dùng.
   result.colors = result.colorRegistry.entries()
   result.namedColors = Object.fromEntries(result.colors.map(({ name, rgba }) => [name, rgba]))
-  result.files.push(...generateUIKitMVVMFiles({ rootClass: result.rootClass }), ...LINT_CONFIG_FILES)
+  result.files.push(...generateUIKitMVVMFiles({ rootClass: result.rootClass, architecture: result.architecture }), ...LINT_CONFIG_FILES)
   const rawNodes = new Map()
   walkRaw(figmaData.root, node => rawNodes.set(node.id, node))
   const imageMap = figmaData.imageMap || {}
