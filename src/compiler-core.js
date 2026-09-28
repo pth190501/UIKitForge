@@ -223,6 +223,97 @@ private final class GradientLayerView: UIView {
 }
 `
 
+function hasUnevenRadii(style) {
+  return Boolean(style.cornerRadii) && new Set(style.cornerRadii.filter(value => value > 0)).size > 1
+}
+
+function cornerShapeLines(node, targetRef, hint, colorRegistry) {
+  const { style } = node
+  const lines = ['        do {', `            let shapeView = CornerRadiiShapeView(radii: [${style.cornerRadii.map(formatNumber).join(', ')}])`]
+  if (style.background) lines.push(`            shapeView.fillColor = ${namedColor(colorRegistry, style.background, `${hint}Background`)}`)
+  if (style.borderColor && style.borderWidth > 0) {
+    lines.push(`            shapeView.strokeColor = ${namedColor(colorRegistry, style.borderColor, `${hint}Border`)}`)
+    lines.push(`            shapeView.lineWidth = ${formatNumber(style.borderWidth)}`)
+  }
+  if (style.clipsContent) lines.push('            shapeView.clipsHost = true')
+  lines.push(`            shapeView.install(in: ${targetRef === 'self' ? 'self' : targetRef})`, '        }')
+  return lines
+}
+
+// Nền/viền theo 4 bán kính khác nhau: layer của chính view helper là CAShapeLayer, path cập nhật trong layoutSubviews
+// (helper ghim 4 cạnh host nên đổi kích thước host là tự vẽ lại). Không mask host — con tràn góc vẫn hiện — trừ khi
+// Figma bật clipsContent (clipsHost).
+const CORNER_RADII_HELPER = `
+private final class CornerRadiiShapeView: UIView {
+    /// Thứ tự như Figma: trên-trái, trên-phải, dưới-phải, dưới-trái.
+    private let radii: [CGFloat]
+    var fillColor: UIColor?
+    var strokeColor: UIColor?
+    var lineWidth: CGFloat = 0
+    var clipsHost = false
+
+    override static var layerClass: AnyClass { CAShapeLayer.self }
+
+    init(radii: [CGFloat]) {
+        self.radii = radii
+        super.init(frame: .zero)
+    }
+
+    required init?(coder: NSCoder) {
+        radii = [0, 0, 0, 0]
+        super.init(coder: coder)
+    }
+
+    func install(in host: UIView) {
+        isUserInteractionEnabled = false
+        backgroundColor = .clear
+        host.backgroundColor = .clear
+        translatesAutoresizingMaskIntoConstraints = false
+        host.insertSubview(self, at: 0)
+        NSLayoutConstraint.activate([
+            leadingAnchor.constraint(equalTo: host.leadingAnchor),
+            trailingAnchor.constraint(equalTo: host.trailingAnchor),
+            topAnchor.constraint(equalTo: host.topAnchor),
+            bottomAnchor.constraint(equalTo: host.bottomAnchor)
+        ])
+    }
+
+    override func layoutSubviews() {
+        super.layoutSubviews()
+        let path = cornerPath(in: bounds)
+        if let shape = layer as? CAShapeLayer {
+            shape.path = path
+            shape.fillColor = fillColor?.cgColor
+            shape.strokeColor = strokeColor?.cgColor
+            shape.lineWidth = lineWidth
+        }
+        guard clipsHost, let host = superview else { return }
+        let mask = (host.layer.mask as? CAShapeLayer) ?? CAShapeLayer()
+        mask.path = path
+        host.layer.mask = mask
+    }
+
+    private func cornerPath(in rect: CGRect) -> CGPath {
+        let limit = min(rect.width, rect.height) / 2
+        let corners = [
+            CGPoint(x: rect.minX, y: rect.minY),
+            CGPoint(x: rect.maxX, y: rect.minY),
+            CGPoint(x: rect.maxX, y: rect.maxY),
+            CGPoint(x: rect.minX, y: rect.maxY)
+        ]
+        let path = CGMutablePath()
+        path.move(to: CGPoint(x: rect.minX + min(radii[0], limit), y: rect.minY))
+        for index in 1...4 {
+            let corner = index % 4
+            let radius = min(radii[corner], limit)
+            path.addArc(tangent1End: corners[corner], tangent2End: corners[(corner + 1) % 4], radius: radius)
+        }
+        path.closeSubpath()
+        return path
+    }
+}
+`
+
 export function backgroundAssetName(node) {
   return `${node.outlet}Background`
 }
@@ -265,6 +356,7 @@ function withGradientHelper(swift) {
   let out = swift
   if (out.includes('GradientLayerView()')) out += GRADIENT_HELPER
   if (out.includes('BackgroundImageView(')) out += BACKGROUND_IMAGE_HELPER
+  if (out.includes('CornerRadiiShapeView(')) out += CORNER_RADII_HELPER
   return withLengthGuards(out)
 }
 
@@ -431,8 +523,8 @@ export function todosOf(node, parentNode = null, rasterized = false) {
   if (node.blendMode && !['NORMAL', 'PASS_THROUGH'].includes(node.blendMode)) todos.push(`blend mode ${node.blendMode.toLowerCase()} chưa hỗ trợ.`)
   // maskedCorners chỉ bật/tắt góc với cùng một bán kính; bán kính khác nhau thật sự thì UIKit cần mask path riêng.
   const radii = mixedCornerRadii(node)
-  if (radii && new Set(radii.filter(value => value > 0)).size > 1) {
-    todos.push(`bo góc khác bán kính (${radii.join('/')}); UIKit đang dùng góc lớn nhất (SwiftUI đã vẽ đúng).`)
+  if (radii && new Set(radii.filter(value => value > 0)).size > 1 && fills.some(paint => GRADIENT_TYPES[paint.type])) {
+    todos.push(`gradient + bo góc khác bán kính (${radii.join('/')}); UIKit đang dùng góc lớn nhất (SwiftUI đã vẽ đúng).`)
   }
   if (!rasterized && isAutoLayout(node)) {
     if (node.layoutWrap === 'WRAP') todos.push('Auto Layout wrap; UIStackView không xuống dòng — cân nhắc UICollectionView.')
@@ -819,8 +911,12 @@ function generateSwiftStyleLines(root, { includeStatic = false, rootRef = 'conte
     const style = node.style || {}
     if (includeStatic) lines.push(...todoCommentLines(node, '        '))
     if (index > 0 && node.kind === 'component' && node.overrides?.length) lines.push(...configureCallLines(target, node.overrides))
-    if (includeStatic && style.background) lines.push(`        ${target}backgroundColor = ${namedColor(colorRegistry, style.background, `${hint}Background`)}`)
-    if (style.radius > 0) {
+    // Bán kính khác nhau thật sự (không chỉ bật/tắt góc) → nền + viền vẽ bằng CornerRadiiShapeView thay cho
+    // backgroundColor/cornerRadius/border của layer; gradient vẫn dùng góc lớn nhất (còn TODO).
+    const shapedCorners = includeStatic && hasUnevenRadii(style) && !style.gradient && node.kind !== 'image'
+    if (shapedCorners) lines.push(...cornerShapeLines(node, targetRef, hint, colorRegistry))
+    if (includeStatic && style.background && !shapedCorners) lines.push(`        ${target}backgroundColor = ${namedColor(colorRegistry, style.background, `${hint}Background`)}`)
+    if (style.radius > 0 && !shapedCorners) {
       lines.push(`        ${target}layer.cornerRadius = ${formatNumber(style.radius)}`)
       if (style.cornerRadii) lines.push(...maskedCornersLines(target, style.cornerRadii))
       // cornerRadius đã bo cả nền/viền mà không cần clip; chỉ clip khi Figma bật clipsContent (hoặc ảnh cần bo),
@@ -829,7 +925,7 @@ function generateSwiftStyleLines(root, { includeStatic = false, rootRef = 'conte
     }
     if (includeStatic && style.gradient && node.kind !== 'image') lines.push(...gradientLines(node, targetRef, hint, colorRegistry))
     if (includeStatic && style.backgroundImage) lines.push(...backgroundImageLines(node, targetRef))
-    if (style.borderColor && style.borderWidth > 0) {
+    if (style.borderColor && style.borderWidth > 0 && !shapedCorners) {
       lines.push(`        ${target}layer.borderColor = ${cgColor(namedColor(colorRegistry, style.borderColor, `${hint}Border`))}`)
       lines.push(`        ${target}layer.borderWidth = ${formatNumber(style.borderWidth)}`)
     }

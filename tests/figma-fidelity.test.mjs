@@ -41,7 +41,11 @@ assert.deepEqual(node('promoText').textRuns.map(run => [run.text, run.fontWeight
 // K8: góc bo khác nhau. Cùng bán kính → maskedCorners; khác bán kính → TODO bên UIKit. SwiftUI luôn đúng nhờ shape riêng.
 assert.match(code, /hotTag\.layer\.cornerRadius = 4\n\s+hotTag\.layer\.maskedCorners = \[\.layerMinXMinYCorner, \.layerMaxXMinYCorner, \.layerMinXMaxYCorner\]/)
 assert.doesNotMatch(code, /TODO: \[hotTag\]/)
-assert.match(code, /\/\/ TODO: \[sheet\] bo góc khác bán kính \(16\/8\/0\/0\)/)
+// P5: bán kính khác nhau → nền vẽ bằng CornerRadiiShapeView (UIKit), clip host vì Figma bật clipsContent.
+assert.doesNotMatch(code, /TODO: \[sheet\]/)
+assert.match(code, /let shapeView = CornerRadiiShapeView\(radii: \[16, 8, 0, 0\]\)\n\s+shapeView\.fillColor = UIColor\(named: "\w+"\)\n\s+shapeView\.clipsHost = true\n\s+shapeView\.install\(in: sheet\)/)
+assert.doesNotMatch(code, /sheet\.(backgroundColor|layer\.cornerRadius|layer\.maskedCorners)/)
+assert.match(code, /private final class CornerRadiiShapeView: UIView/)
 assert.match(swiftUI, /\.background\(\n\s+CornerRadiiShape\(radii: \[4, 4, 0, 4\]\)\n\s+\.fill\(/)
 assert.match(swiftUI, /\.clipShape\(CornerRadiiShape\(radii: \[16, 8, 0, 0\]\)\)/)
 assert.equal(swiftUI.match(/private struct CornerRadiiShape: Shape/g).length, 1)
