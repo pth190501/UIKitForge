@@ -110,3 +110,52 @@ jobs:
 
       - name: swiftlint --strict
         run: swiftlint lint --strict --config ci-artifacts/.swiftlint.yml $(find ci-artifacts -name '*.swift')
+
+  # Độ giống thật: render code UIKit-Code sinh ra trên iOS Simulator, so pixel với ảnh Figma (secret FIGMA_TOKEN).
+  # Chưa chặn merge (continue-on-error) — con số hiện ở job summary, ảnh render/diff trong artifact.
+  visual-fidelity:
+    runs-on: macos-latest
+    continue-on-error: true
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+
+      - name: Setup Node
+        uses: actions/setup-node@v5
+        with:
+          node-version: 22
+
+      - name: Install dependencies
+        run: npm install
+
+      - name: Prepare snapshot package
+        env:
+          FIGMA_TOKEN: ${{ secrets.FIGMA_TOKEN }}
+        run: node scripts/ci-snapshot-prepare.mjs
+
+      - name: Render on iOS Simulator
+        run: |
+          set -e
+          DEVICE_ID=$(xcrun simctl list devices available -j | python3 -c "import json,sys; d=json.load(sys.stdin)['devices']; print(next(x['udid'] for k in sorted(d, reverse=True) if 'iOS' in k for x in d[k] if x['name'].startswith('iPhone')))")
+          echo "Simulator: $DEVICE_ID"
+          cd ci-snapshot
+          # Scheme tự sinh của Swift package: "<Package>-Package" khi có, nếu không thì scheme của product.
+          SCHEME=$(xcodebuild -list -json | python3 -c "import json,sys; s=json.load(sys.stdin)['workspace']['schemes']; print(next((x for x in s if x.endswith('-Package')), 'SnapshotHost'))")
+          echo "Scheme: $SCHEME"
+          TEST_RUNNER_SNAPSHOT_OUTPUT_DIR="$GITHUB_WORKSPACE/snapshot-output" \
+          TEST_RUNNER_SNAPSHOT_REFERENCE_DIR="$GITHUB_WORKSPACE/ci-snapshot/references" \
+          xcodebuild test -scheme "$SCHEME" -destination "id=$DEVICE_ID" -quiet
+
+      - name: Report
+        if: always()
+        run: node scripts/ci-snapshot-report.mjs snapshot-output >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload images
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: visual-fidelity
+          path: |
+            snapshot-output
+            ci-snapshot/references
+          if-no-files-found: ignore
