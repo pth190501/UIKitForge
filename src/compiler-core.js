@@ -302,7 +302,9 @@ function buildStack(node, ir, arranged) {
     axis: horizontal ? 'horizontal' : 'vertical',
     spacing: spaceBetween ? 0 : round(node.itemSpacing || 0),
     alignment,
-    distribution: spaceBetween ? 'equalSpacing' : 'fill',
+    // SPACE_BETWEEN với đúng 1 con FILL: Figma kéo con giãn hết trục chính; .equalSpacing của UIStackView thì không
+    // bao giờ kéo giãn (con chỉ rộng theo nội dung) → dùng .fill mới đúng ý thiết kế.
+    distribution: spaceBetween && !(arranged.length === 1 && arranged[0].sizing[main] === 'FILL') ? 'equalSpacing' : 'fill',
     frame: {
       x: round(pad.leading),
       y: round(pad.top),
