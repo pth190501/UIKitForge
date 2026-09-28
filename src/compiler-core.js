@@ -2,7 +2,7 @@ import { findComponentCandidates, firstVisibleSolidPaint } from './figma.js'
 import { createColorRegistry } from './color-registry.js'
 
 const VIEW_TYPES = new Set([
-  'FRAME', 'GROUP', 'SECTION', 'COMPONENT', 'COMPONENT_SET', 'INSTANCE',
+  'FRAME', 'GROUP', 'SECTION', 'COMPONENT', 'COMPONENT_SET', 'INSTANCE', 'SLOT',
   'RECTANGLE', 'ELLIPSE', 'VECTOR', 'BOOLEAN_OPERATION', 'STAR', 'POLYGON', 'LINE'
 ])
 
@@ -52,6 +52,9 @@ export function compileUIKit(figmaData, requestedRootClass = '', options = {}) {
   )
 
   warnings.push(...collectLayoutWarnings(mainIR))
+  for (const type of collectUnknownContainerTypes(sourceRoot)) {
+    warnings.push(`Figma node type ${type} is not natively supported; it was compiled as a plain container UIView with its children kept.`)
+  }
   if (colorRegistry.entries().length) {
     warnings.push('Colors.xcassets was generated with the Dark Appearance set to the same value as Any Appearance (Figma has no dark variant). Edit the color sets in Xcode for a real dark palette.')
   }
@@ -143,7 +146,22 @@ function visibleRenderableChildren(node) {
 }
 
 function isRenderable(node) {
-  return node.type === 'TEXT' || VIEW_TYPES.has(node.type)
+  return node.type === 'TEXT' || VIEW_TYPES.has(node.type) || isUnknownContainer(node)
+}
+
+// Figma thêm node type mới theo thời gian (SLOT từng bị bỏ qua như vậy) — node lạ nhưng có con vẫn là
+// container, loại nó đi sẽ mất im lặng cả nhánh con (label, component...). Dựng thành UIView thường + cảnh báo.
+function isUnknownContainer(node) {
+  return node.type !== 'TEXT' && !VIEW_TYPES.has(node.type) && (node.children || []).length > 0
+}
+
+function collectUnknownContainerTypes(node, types = new Set()) {
+  for (const child of node.children || []) {
+    if (child.visible === false) continue
+    if (isUnknownContainer(child)) types.add(child.type)
+    collectUnknownContainerTypes(child, types)
+  }
+  return types
 }
 
 function inferKind(node, renderableChildren = visibleRenderableChildren(node)) {

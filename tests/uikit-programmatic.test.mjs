@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict'
 import { compileUIKit } from '../src/compiler.js'
-import { cardScreen, layoutScreen } from './fixtures.mjs'
+import { cardScreen, feedSlotScreen, layoutScreen } from './fixtures.mjs'
 
 const compileFor = (data, name) => compileUIKit(data, name, { deploymentTarget: 13 })
 const filesFor = (data, name) => Object.fromEntries(compileFor(data, name).files.map(file => [file.path, file.content]))
@@ -64,7 +64,7 @@ for (const [name, content] of Object.entries(layout)) {
 }
 
 // CI chạy `swiftlint --strict` với config mặc định (line_length 120) — mọi dòng Swift sinh ra phải ≤ 120 ký tự.
-for (const [fixtureName, data] of Object.entries({ layoutScreen, cardScreen })) {
+for (const [fixtureName, data] of Object.entries({ layoutScreen, cardScreen, feedSlotScreen })) {
   for (const deploymentTarget of [13, 17]) {
     const compiled = compileUIKit(data, 'GeneratedView', { deploymentTarget })
     for (const file of [...compiled.files, ...compiled.swiftUIFiles]) {
