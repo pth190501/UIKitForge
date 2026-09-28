@@ -47,11 +47,16 @@ export function compileUIKit(figmaData, requestedRootClass = '', options = {}) {
   const slotsByClass = new Map(builtComponents.map(({ entry, ir }) => [entry.className, ir.slots]))
   for (const ir of [mainIR, ...builtComponents.map(item => item.ir)]) annotateInstanceOverrides(ir, rawById, slotsByClass)
 
+  // Component tên kiểu nút (Button/Btn/CTA/Nút) → UIControl + Button SwiftUI; view cha mở closure onXxxTap.
+  const buttonClasses = new Set(builtComponents.filter(({ entry }) => isButtonName(entry.source.name)).map(({ entry }) => entry.className))
+  for (const { entry, ir } of builtComponents) ir.meta.isButton = buttonClasses.has(entry.className)
+  const finishSwift = (swift, ir, slots = null) => withGradientHelper(withButtonActions(asButtonControl(slots ? withConfigure(swift, slots) : swift, ir), ir, buttonClasses))
+
   for (const { componentId, entry, ir } of builtComponents) {
     files.push(
-      { path: `Components/${entry.className}/${entry.className}.swift`, name: `${entry.className}.swift`, language: 'swift', content: withGradientHelper(withConfigure(generateSwift(entry.className, ir, colorRegistry), ir.slots)), kind: 'component', target: 'uikit-xib' },
+      { path: `Components/${entry.className}/${entry.className}.swift`, name: `${entry.className}.swift`, language: 'swift', content: finishSwift(generateSwift(entry.className, ir, colorRegistry), ir, ir.slots), kind: 'component', target: 'uikit-xib' },
       { path: `Components/${entry.className}/${entry.className}.xib`, name: `${entry.className}.xib`, language: 'xml', content: generateXib(entry.className, ir, deploymentTarget), kind: 'component', target: 'uikit-xib' },
-      { path: `UIKit-Code/Components/${entry.className}/${entry.className}.swift`, name: `${entry.className}.swift`, language: 'swift', content: withGradientHelper(withConfigure(generateSwiftProgrammatic(entry.className, ir, colorRegistry), ir.slots)), kind: 'component', target: 'uikit-code' }
+      { path: `UIKit-Code/Components/${entry.className}/${entry.className}.swift`, name: `${entry.className}.swift`, language: 'swift', content: finishSwift(generateSwiftProgrammatic(entry.className, ir, colorRegistry), ir, ir.slots), kind: 'component', target: 'uikit-code' }
     )
     components.push({ componentId, className: entry.className, sourceName: entry.source.name || 'Component', sourceId: entry.source.id })
     componentIRs.push({ className: entry.className, ir })
@@ -59,8 +64,8 @@ export function compileUIKit(figmaData, requestedRootClass = '', options = {}) {
 
   files.unshift(
     { path: `${rootClass}/${rootClass}.xib`, name: `${rootClass}.xib`, language: 'xml', content: generateXib(rootClass, mainIR, deploymentTarget), kind: 'main', target: 'uikit-xib' },
-    { path: `${rootClass}/${rootClass}.swift`, name: `${rootClass}.swift`, language: 'swift', content: withGradientHelper(generateSwift(rootClass, mainIR, colorRegistry)), kind: 'main', target: 'uikit-xib' },
-    { path: `UIKit-Code/${rootClass}/${rootClass}.swift`, name: `${rootClass}.swift`, language: 'swift', content: withGradientHelper(generateSwiftProgrammatic(rootClass, mainIR, colorRegistry)), kind: 'main', target: 'uikit-code' }
+    { path: `${rootClass}/${rootClass}.swift`, name: `${rootClass}.swift`, language: 'swift', content: finishSwift(generateSwift(rootClass, mainIR, colorRegistry), mainIR), kind: 'main', target: 'uikit-xib' },
+    { path: `UIKit-Code/${rootClass}/${rootClass}.swift`, name: `${rootClass}.swift`, language: 'swift', content: finishSwift(generateSwiftProgrammatic(rootClass, mainIR, colorRegistry), mainIR), kind: 'main', target: 'uikit-code' }
   )
 
   warnings.push(...collectLayoutWarnings(mainIR))
@@ -482,6 +487,51 @@ function withLengthGuards(swift) {
   const lineCount = swift.endsWith('\n') ? out.length - 1 : out.length
   // file_length được phép disable toàn file (nằm trong allowed_rules mặc định của blanket_disable_command).
   return lineCount > LENGTH_LIMITS.file ? `// swiftlint:disable file_length\n${out.join('\n')}` : out.join('\n')
+}
+
+export function isButtonName(name) {
+  return /(^|[^a-z])(button|btn|cta|nut)([^a-z]|$)/.test(foldDiacritics(String(name || '')).toLowerCase())
+}
+
+// Component nút: UIControl (target-action, highlight, trait .button) thay UIView — giữ nguyên cây view/layout.
+function asButtonControl(swift, ir) {
+  if (!ir.meta?.isButton) return swift
+  const texts = flatten(ir).filter(node => node.kind === 'label' && node.text).map(node => node.text)
+  const label = texts.length ? `\n        accessibilityLabel = ${swiftString(texts.join(', '))}` : ''
+  return swift
+    .replace(/^final class (\w+): UIView \{$/m, 'final class $1: UIControl {')
+    .replace('    private func commonInit() {', `    override var isHighlighted: Bool {\n        didSet { alpha = isHighlighted ? 0.6 : 1 }\n    }\n\n    private func commonInit() {`)
+    // Con không nhận chạm → UIControl nhận trọn touch (highlight + .touchUpInside) dù bấm trúng label/icon.
+    .replace('        applyGeneratedStyle()\n    }', `        applyGeneratedStyle()\n        subviews.forEach { $0.isUserInteractionEnabled = false }\n        isAccessibilityElement = true\n        accessibilityTraits = .button${label}\n    }`)
+}
+
+// View chứa instance nút → addTarget + closure `onXxxTap` để màn hình/VC gắn hành động mà không cần outlet public.
+function withButtonActions(swift, ir, buttonClasses) {
+  const buttons = flatten(ir).slice(1).filter(node => node.kind === 'component' && buttonClasses.has(node.className))
+  if (!buttons.length) return swift
+  const used = new Set()
+  const members = []
+  const targets = []
+  for (const node of buttons) {
+    // handle + ≤31 + Tap ≤ 40 ký tự (identifier_name áp dụng cả tên hàm).
+    let base = node.outlet.charAt(0).toUpperCase() + node.outlet.slice(1, 31)
+    for (let n = 2; used.has(base); n++) base = `${base.slice(0, 30)}${n}`
+    used.add(base)
+    members.push(
+      `    /// Bấm "${humanizeLayerName(node.name).replace(/"/g, '')}".`,
+      `    var on${base}Tap: (() -> Void)?`,
+      '',
+      `    @objc private func handle${base}Tap() {`,
+      `        on${base}Tap?()`,
+      '    }',
+      ''
+    )
+    const single = `        ${node.outlet}.addTarget(self, action: #selector(handle${base}Tap), for: .touchUpInside)`
+    targets.push(...(single.length <= 120 ? [single] : [`        ${node.outlet}.addTarget(`, '            self,', `            action: #selector(handle${base}Tap),`, '            for: .touchUpInside', '        )']))
+  }
+  return swift
+    .replace('    override init(frame: CGRect) {', `${members.join('\n')}\n    override init(frame: CGRect) {`)
+    .replace('    private func applyGeneratedStyle() {\n', `    private func applyGeneratedStyle() {\n${targets.join('\n')}\n`)
 }
 
 // Thêm `struct Content` + `configure(with:)` vào class component. Dùng struct thay vì nhiều tham số để không

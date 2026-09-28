@@ -120,6 +120,23 @@ assert.ok(compiled.warnings.some(item => item.includes('"bannerBackground"')))
 // Angular có handle: hướng bắt đầu lên trên (12 giờ) = -90° trong SwiftUI.
 assert.match(swiftUI, /startAngle: \.degrees\(-90\),\n\s+endAngle: \.degrees\(270\)/)
 
+// P6: component tên nút → UIControl (UIKit) / Button (SwiftUI); view cha gắn addTarget + closure onXxxTap.
+const banButton = ban.files.find(file => file.path === 'UIKit-Code/Components/ButtonsButtonView/ButtonsButtonView.swift').content
+assert.match(banButton, /^final class ButtonsButtonView: UIControl \{$/m)
+assert.match(banButton, /override var isHighlighted: Bool/)
+assert.match(banButton, /subviews\.forEach \{ \$0\.isUserInteractionEnabled = false \}\n\s+isAccessibilityElement = true\n\s+accessibilityTraits = \.button\n\s+accessibilityLabel = "Xem tất cả"/)
+for (const path of ['UIKit-Code/GeneratedView/GeneratedView.swift', 'GeneratedView/GeneratedView.swift']) {
+  const source = ban.files.find(file => file.path === path).content
+  assert.match(source, /var onButtonsButtonTap: \(\(\) -> Void\)\?/, path)
+  assert.match(source, /@objc private func handleButtonsButtonTap\(\) \{\n\s+onButtonsButtonTap\?\(\)/, path)
+  assert.match(source, /buttonsButton\.addTarget\(self, action: #selector\(handleButtonsButtonTap\), for: \.touchUpInside\)/, path)
+}
+const banButtonSwiftUI = ban.swiftUIFiles.find(file => file.path.endsWith('/ButtonsButtonView.swift')).content
+assert.match(banButtonSwiftUI, /var action: \(\) -> Void = \{\}\n\n\s+var body: some View \{\n\s+Button\(action: action\) \{/)
+assert.match(banButtonSwiftUI, /\.buttonStyle\(\.plain\)/)
+// Component không phải nút giữ nguyên UIView.
+assert.match(ban.files.find(file => file.path === 'UIKit-Code/Components/PlanCardQuickDataView/PlanCardQuickDataView.swift').content, /final class PlanCardQuickDataView: UIView \{/)
+
 // Màn không có gì cần sửa tay thì không sinh TODO.md rỗng.
 const plain = compileUIKit({ root: { id: '9:1', type: 'FRAME', name: 'Plain', ...box(0, 0, 100, 100), children: [] } }, 'PlainView', { deploymentTarget: 13 })
 assert.ok(!plain.files.some(file => file.path === 'TODO.md'))

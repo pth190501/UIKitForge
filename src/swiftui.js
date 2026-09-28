@@ -146,8 +146,14 @@ function generateComponentView(className, root, api, colorRegistry) {
   const slotLines = slots
     .map(slot => `    var ${slot.param} = ${slot.kind === 'text' ? swiftString(slot.fallback) : 'false'}`)
     .flatMap(line => line.length > 120 ? ['    // swiftlint:disable:next line_length', line] : [line])
+  // Component nút: `action` đặt cuối để memberwise init vẫn gọi được như cũ (ButtonsButtonView()).
+  if (root.meta?.isButton) slotLines.push('    var action: () -> Void = {}')
   const stored = slotLines.length ? `${slotLines.join('\n')}\n\n` : ''
-  const body = renderContent(root, ctx, true)
+  const content = renderContent(root, ctx, true)
+  // Plain style: giữ nguyên giao diện thiết kế (không tô màu accent), vẫn có hiệu ứng nhấn + trait nút cho VoiceOver.
+  const body = root.meta?.isButton
+    ? ['Button(action: action) {', ...indent(content, 1), '}', api.foregroundStyle ? '.buttonStyle(.plain)' : '.buttonStyle(PlainButtonStyle())']
+    : content
   const preview = api.observation
     ? `#Preview {\n    ${className}()\n}`
     : `struct ${className}Previews: PreviewProvider {\n    static var previews: some View {\n        ${className}()\n    }\n}`
