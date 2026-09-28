@@ -3,13 +3,26 @@ import { figmaPaintToCss, firstVisiblePaint, isRasterCandidate } from './figma.j
 import { applySwiftPreview } from './preview.js'
 import { generateSwiftUIFiles } from './swiftui.js'
 import { generateUIKitMVVMFiles, normalizeArchitecture } from './uikit-router.js'
+import { planColorNames, styleColorNames } from './color-registry.js'
 import { LINT_CONFIG_FILES } from './lint-config.js'
 
 export function compileUIKit(figmaData, requestedRootClass = '', options = {}) {
+  // Lượt 1 chỉ để biết mỗi màu được dùng ở đâu (UIKit + SwiftUI) → chốt tên màu; lượt 2 sinh code với tên đó.
+  // Không thay tên sau khi sinh: độ dài dòng đổi sẽ làm sai các bước wrap/disable line_length đã tính.
+  const colorNames = options.colorNames || planColorNames(generateAll(figmaData, requestedRootClass, options).colorRegistry.usage(), styleColorNames(figmaData.root, figmaData.styles))
+  const result = generateAll(figmaData, requestedRootClass, { ...options, colorNames })
+  return finishCompile(result, figmaData)
+}
+
+// Sinh SwiftUI trước bước hydrate preview vì hydrate ghi đè style/layout bằng dữ liệu CSS.
+function generateAll(figmaData, requestedRootClass, options) {
   const result = compileCore(figmaData, requestedRootClass, options)
-  // Sinh SwiftUI trước bước hydrate preview vì hydrate ghi đè style/layout bằng dữ liệu CSS.
   result.architecture = normalizeArchitecture(options.architecture)
   result.swiftUIFiles = generateSwiftUIFiles({ rootClass: result.rootClass, mainIR: result.previewRoot, componentIRs: result.componentIRs, deploymentTarget: result.deploymentTarget, colorRegistry: result.colorRegistry, architecture: result.architecture })
+  return result
+}
+
+function finishCompile(result, figmaData) {
   // SwiftUI đăng ký màu vào cùng registry sau khi core đã chụp `colors` — chụp lại để Colors.xcassets không thiếu màu chỉ SwiftUI dùng.
   result.colors = result.colorRegistry.entries()
   result.namedColors = Object.fromEntries(result.colors.map(({ name, rgba }) => [name, rgba]))

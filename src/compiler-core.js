@@ -27,7 +27,7 @@ export function compileUIKit(figmaData, requestedRootClass = '', options = {}) {
     componentMap.set(componentId, { className, source: node, instances: (all || [node]).filter(item => item.id !== sourceRoot.id) })
   }
 
-  const colorRegistry = createColorRegistry()
+  const colorRegistry = createColorRegistry({ names: options.colorNames })
   const files = []
   const components = []
   const componentIRs = []

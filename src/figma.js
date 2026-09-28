@@ -65,7 +65,8 @@ export async function fetchFigmaSelection({ figmaUrl, token }) {
     root,
     components: payload.components || {},
     componentSets: payload.componentSets || {},
-    styles: payload.styles || {},
+    // Endpoint /nodes trả styles theo từng node (nodes[id].styles), endpoint /files trả ở gốc — gộp cả hai.
+    styles: Object.assign({}, payload.styles, ...Object.values(payload.nodes || {}).map(entry => entry?.styles || {})),
     imageMap,
     imageFillWarning,
     nodeImageExports,
