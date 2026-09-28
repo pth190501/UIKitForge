@@ -49,6 +49,8 @@ function generateViewModel(names, texts, api) {
   const properties = texts.map(({ property, value }) => api.observation
     ? `    private(set) var ${property} = ${swiftString(value)}`
     : `    @Published private(set) var ${property} = ${swiftString(value)}`)
+    // Câu text dài từ Figma không bẻ được — chỉ tắt line_length cho đúng dòng đó (ngưỡng 120 như .swiftlint.yml).
+    .flatMap(line => line.length > 120 ? ['    // swiftlint:disable:next line_length', line] : [line])
   const header = api.observation
     ? `import Observation\n\n@Observable\nfinal class ${names.viewModel} {`
     : `import Combine\n\nfinal class ${names.viewModel}: ObservableObject {`

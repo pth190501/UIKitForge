@@ -1,10 +1,9 @@
-import { compileUIKit as compileCore } from './compiler-core.js'
+import { compileUIKit as compileCore, sanitizeOutletName } from './compiler-core.js'
 import { figmaPaintToCss, firstVisiblePaint } from './figma.js'
 import { applySwiftPreview } from './preview.js'
 import { generateSwiftUIFiles } from './swiftui.js'
 import { generateUIKitMVVMFiles } from './uikit-router.js'
 import { LINT_CONFIG_FILES } from './lint-config.js'
-import { foldDiacritics } from './identifier.js'
 
 export function compileUIKit(figmaData, requestedRootClass = '', options = {}) {
   const result = compileCore(figmaData, requestedRootClass, options)
@@ -192,7 +191,7 @@ function extractStyle(node, imageMap = {}) {
       : 0
 
   return {
-    background: firstFill?.type === 'IMAGE' ? null : figmaPaintToCss(firstFill),
+    background: firstFill?.type === 'IMAGE' || node.type === 'TEXT' ? null : figmaPaintToCss(firstFill),
     textColor: node.type === 'TEXT' ? figmaPaintToCss(solidTextFill) || 'rgba(0, 0, 0, 1)' : null,
     borderColor: figmaPaintToCss(stroke),
     borderWidth: round(node.strokeWeight || 0),
@@ -282,23 +281,6 @@ function colorToRgba(color) {
   if (!color) return null
   const { r = 0, g = 0, b = 0, a = 1 } = color
   return `rgba(${Math.round(r * 255)}, ${Math.round(g * 255)}, ${Math.round(b * 255)}, ${Number(a.toFixed(3))})`
-}
-
-function sanitizeOutletName(value) {
-  const parts = foldDiacritics(value || '')
-    .replace(/[^A-Za-z0-9]+/g, ' ')
-    .trim()
-    .split(/\s+/)
-    .filter(Boolean)
-
-  let result = parts
-    .map((part, index) => index === 0
-      ? part.charAt(0).toLowerCase() + part.slice(1)
-      : part.charAt(0).toUpperCase() + part.slice(1))
-    .join('') || 'generatedView'
-
-  if (/^[0-9]/.test(result)) result = `view${result}`
-  return result
 }
 
 function dedupeOutlets(root) {

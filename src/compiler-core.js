@@ -1,6 +1,6 @@
 import { findComponentCandidates, firstVisibleSolidPaint } from './figma.js'
 import { createColorRegistry } from './color-registry.js'
-import { foldDiacritics } from './identifier.js'
+import { foldDiacritics, joinWordsCapped } from './identifier.js'
 
 const VIEW_TYPES = new Set([
   'FRAME', 'GROUP', 'SECTION', 'COMPONENT', 'COMPONENT_SET', 'INSTANCE', 'SLOT',
@@ -207,7 +207,8 @@ function extractStyle(node) {
     : Array.isArray(node.rectangleCornerRadii) ? Math.max(...node.rectangleCornerRadii) : 0
 
   return {
-    background: paintToRgba(fill),
+    // Với TEXT, `fills` của Figma là màu chữ (glyph), không phải nền — lấy làm backgroundColor sẽ ra khối đặc cùng màu chữ.
+    background: node.type === 'TEXT' ? null : paintToRgba(fill),
     textColor: node.type === 'TEXT' ? paintToRgba(fill) || 'rgba(0, 0, 0, 1)' : null,
     borderColor: paintToRgba(stroke),
     borderWidth: round(node.strokeWeight || 0),
@@ -442,7 +443,15 @@ function generateSwiftStyleLines(root, { includeStatic = false, rootRef = 'conte
       lines.push(`        ${target}layer.masksToBounds = false`)
     }
   }
-  return lines.join('\n')
+  return allowLongLiteralLines(lines).join('\n')
+}
+
+// Text/accessibilityLabel lấy nguyên câu từ Figma — không bẻ dòng string literal an toàn được, nên chỉ tắt
+// line_length cho đúng dòng đó. Ngưỡng 120 khớp .swiftlint.yml đi kèm (tránh superfluous_disable_command).
+function allowLongLiteralLines(lines) {
+  return lines.flatMap(line => line.includes('\n') || line.length <= 120
+    ? [line]
+    : [`${line.match(/^\s*/)[0]}// swiftlint:disable:next line_length`, line])
 }
 
 function swiftFontExpression(style) {
@@ -777,14 +786,15 @@ function swiftType(node) {
 
 function sanitizeClassName(value, fallback) {
   const parts = foldDiacritics(value || '').replace(/[^A-Za-z0-9]+/g, ' ').trim().split(/\s+/).filter(Boolean)
-  let result = parts.map(part => part.charAt(0).toUpperCase() + part.slice(1)).join('') || fallback
+  let result = joinWordsCapped(parts.map(part => part.charAt(0).toUpperCase() + part.slice(1))) || fallback
   if (/^[0-9]/.test(result)) result = `View${result}`
   return result
 }
 
-function sanitizeOutletName(value) {
+// Export để preview (compiler.js) đặt outlet y hệt code Swift sinh ra — lệch tên là live preview không match được.
+export function sanitizeOutletName(value) {
   const parts = foldDiacritics(value || '').replace(/[^A-Za-z0-9]+/g, ' ').trim().split(/\s+/).filter(Boolean)
-  let result = parts.map((part, index) => index === 0 ? part.charAt(0).toLowerCase() + part.slice(1) : part.charAt(0).toUpperCase() + part.slice(1)).join('') || 'generatedView'
+  let result = joinWordsCapped(parts.map((part, index) => index === 0 ? part.charAt(0).toLowerCase() + part.slice(1) : part.charAt(0).toUpperCase() + part.slice(1))) || 'generatedView'
   if (/^[0-9]/.test(result)) result = `view${result}`
   if (SWIFT_KEYWORDS.has(result)) result += 'View'
   if (result.length < 3) result += 'View' // SwiftLint identifier_name requires >= 3 chars (e.g. a layer named "A")

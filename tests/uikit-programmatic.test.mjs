@@ -69,7 +69,10 @@ for (const [fixtureName, data] of Object.entries({ layoutScreen, cardScreen, fee
     const compiled = compileUIKit(data, 'GeneratedView', { deploymentTarget })
     for (const file of [...compiled.files, ...compiled.swiftUIFiles]) {
       if (file.language !== 'swift') continue
-      file.content.split('\n').forEach((line, index) => {
+      const lines = file.content.split('\n')
+      lines.forEach((line, index) => {
+        // String literal dài từ Figma được phép vượt, nhưng chỉ khi dòng trước tắt đúng rule line_length.
+        if (lines[index - 1]?.trim() === '// swiftlint:disable:next line_length') return
         assert.ok(line.length <= 120, `${fixtureName} iOS ${deploymentTarget} ${file.path}:${index + 1} is ${line.length} chars (> 120)`)
       })
     }
