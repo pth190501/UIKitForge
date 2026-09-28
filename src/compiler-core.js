@@ -216,13 +216,14 @@ function withLengthGuards(swift) {
     }
     return count
   }
-  const out = []
-  lines.forEach((line, index) => {
+  // `disable:this` ở cuối dòng khai báo (nơi SwiftLint báo lỗi): chèn dòng `disable:next` phía trên sẽ chen giữa
+  // doc comment (///) và khai báo → orphaned_doc_comment.
+  const out = lines.map((line, index) => {
     const func = line.match(/^(\s*)(?:(?:private|fileprivate|override|static|final|@objc)\s+)*func\s.*\{$/)
     const type = line.match(/^(\s*)(?:(?:private|fileprivate|final)\s+)*(?:class|struct|enum)\s.*\{$/)
-    if (func && bodyLength(index, func[1]) > LENGTH_LIMITS.function) out.push(`${func[1]}// swiftlint:disable:next function_body_length`)
-    if (type && bodyLength(index, type[1]) > LENGTH_LIMITS.type) out.push(`${type[1]}// swiftlint:disable:next type_body_length`)
-    out.push(line)
+    if (func && bodyLength(index, func[1]) > LENGTH_LIMITS.function) return `${line} // swiftlint:disable:this function_body_length`
+    if (type && bodyLength(index, type[1]) > LENGTH_LIMITS.type) return `${line} // swiftlint:disable:this type_body_length`
+    return line
   })
   const lineCount = swift.endsWith('\n') ? out.length - 1 : out.length
   // file_length được phép disable toàn file (nằm trong allowed_rules mặc định của blanket_disable_command).

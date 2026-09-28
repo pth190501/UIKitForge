@@ -103,10 +103,13 @@ for (const file of [...ban.files, ...ban.swiftUIFiles].filter(item => item.langu
 }
 const banCode = ban.files.find(file => file.path === 'UIKit-Code/GeneratedView/GeneratedView.swift').content
 assert.ok(banCode.startsWith('// swiftlint:disable file_length\n'))
-assert.match(banCode, /\/\/ swiftlint:disable:next type_body_length\nfinal class GeneratedView: UIView \{/)
-assert.match(banCode, /\/\/ swiftlint:disable:next function_body_length\n\s+private func configureList\(\) \{/)
-assert.match(banCode, /\/\/ swiftlint:disable:next function_body_length\n\s+private func applyGeneratedStyle\(\) \{/)
-assert.doesNotMatch(banCode, /disable:next function_body_length\n\s+private func commonInit\(\)/, 'hàm ngắn không được disable (superfluous_disable_command)')
+assert.match(banCode, /\nfinal class GeneratedView: UIView \{ \/\/ swiftlint:disable:this type_body_length\n/)
+assert.match(banCode, /private func configureList\(\) \{ \/\/ swiftlint:disable:this function_body_length\n/)
+assert.match(banCode, /private func applyGeneratedStyle\(\) \{ \/\/ swiftlint:disable:this function_body_length\n/)
+assert.match(banCode, /private func commonInit\(\) \{\n/, 'hàm ngắn không được disable (superfluous_disable_command)')
+// Bản XIB có doc comment (///) ngay trên applyGeneratedStyle — không được chen dòng nào vào giữa (orphaned_doc_comment).
+const banXib = ban.files.find(file => file.path === 'GeneratedView/GeneratedView.swift').content
+assert.match(banXib, /\/\/\/ [^\n]*\n\s+private func applyGeneratedStyle\(\) \{ \/\/ swiftlint:disable:this function_body_length/)
 const small = compileUIKit(layoutScreen, 'GeneratedView', { deploymentTarget: 17 }).files.filter(file => file.language === 'swift')
 for (const file of small) assert.doesNotMatch(file.content, /swiftlint:disable(:next)? (file_length|type_body_length|function_body_length)/, file.path)
 
