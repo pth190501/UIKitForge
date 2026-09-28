@@ -6,7 +6,7 @@ import { cardScreen } from './fixtures.mjs'
 const cardCompiled = compileUIKit(cardScreen, 'HomeView')
 const cardXib = Object.fromEntries(cardCompiled.files.map(file => [file.path, file.content]))
 const titleSwift = cardXib['Components/PackageCardView/PackageCardView.swift']
-assert.match(titleSwift, /UIFontMetrics\(forTextStyle: \.callout\)\.scaledFont\(for: UIFont\.systemFont\(ofSize: 16, weight: \.semibold\)\)/)
+assert.match(titleSwift, /UIFontMetrics\(forTextStyle: \.callout\)\s*\.scaledFont\(for: UIFont\.systemFont\(ofSize: 16, weight: \.semibold\)\)/)
 assert.match(titleSwift, /\.adjustsFontForContentSizeCategory = true/)
 
 // UIImageView: accessibilityLabel lấy từ tên layer Figma, đã humanize.

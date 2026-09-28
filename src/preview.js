@@ -376,9 +376,10 @@ function matchSwiftString(source, lhsPattern) {
 }
 
 // Chấp nhận cả `.systemFont(...)` trần lẫn bản bọc UIFontMetrics(...).scaledFont(for: UIFont.systemFont(...))
-// (Dynamic Type) — chỉ quét trong cùng 1 dòng gán để không bắt nhầm font của dòng khác.
+// (Dynamic Type). Chỉ cho vượt dòng khi dòng sau là continuation bắt đầu bằng `.` (vd `.scaledFont(for:`),
+// để không bắt nhầm font của câu lệnh khác.
 function matchFont(source, lhsPattern) {
-  const pattern = new RegExp(`${lhsPattern}\\s*=[^\\n]*?systemFont\\(ofSize:\\s*([\\d.]+),\\s*weight:\\s*\\.([A-Za-z]+)\\)`)
+  const pattern = new RegExp(`${lhsPattern}\\s*=(?:[^\\n]|\\n\\s*(?=\\.))*?systemFont\\(ofSize:\\s*([\\d.]+),\\s*weight:\\s*\\.([A-Za-z]+)\\)`)
   const match = source.match(pattern)
   if (!match) return null
   return { size: Number(match[1]), weight: fontWeightNumber(match[2]) }

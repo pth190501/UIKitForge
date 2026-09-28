@@ -433,7 +433,8 @@ function swiftFontExpression(style) {
     : `UIFont.systemFont(ofSize: ${formatNumber(style.fontSize)}, weight: .${weight})`
   // UIFontMetrics giữ đúng size Figma ở cỡ chữ mặc định nhưng vẫn scale theo Dynamic Type,
   // thay vì .systemFont cố định — xem ghi chú adjustsFontForContentSizeCategory ở nơi gọi.
-  return `UIFontMetrics(forTextStyle: .${nearestTextStyle(style.fontSize, style.fontWeight)}).scaledFont(for: ${base})`
+  // Xuống dòng trước .scaledFont: viết liền 1 dòng vượt 120 ký tự (line_length mặc định của SwiftLint).
+  return `UIFontMetrics(forTextStyle: .${nearestTextStyle(style.fontSize, style.fontWeight)})\n            .scaledFont(for: ${base})`
 }
 
 // Khớp fontSize Figma với UIFont.TextStyle gần nhất để UIFontMetrics scale đúng đường cong Dynamic Type của Apple.

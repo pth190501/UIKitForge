@@ -63,4 +63,17 @@ for (const [name, content] of Object.entries(layout)) {
   assert.ok(content.endsWith('}\n'), `${name}: must end with a single newline`)
 }
 
+// CI chạy `swiftlint --strict` với config mặc định (line_length 120) — mọi dòng Swift sinh ra phải ≤ 120 ký tự.
+for (const [fixtureName, data] of Object.entries({ layoutScreen, cardScreen })) {
+  for (const deploymentTarget of [13, 17]) {
+    const compiled = compileUIKit(data, 'GeneratedView', { deploymentTarget })
+    for (const file of [...compiled.files, ...compiled.swiftUIFiles]) {
+      if (file.language !== 'swift') continue
+      file.content.split('\n').forEach((line, index) => {
+        assert.ok(line.length <= 120, `${fixtureName} iOS ${deploymentTarget} ${file.path}:${index + 1} is ${line.length} chars (> 120)`)
+      })
+    }
+  }
+}
+
 console.log('✓ UIKit programmatic + MVVM-R router generation passed')

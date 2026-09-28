@@ -32,7 +32,7 @@ assert.equal(codeRoot.style.background, 'rgba(255, 0, 0, 1)')
 
 // Font bọc UIFontMetrics (Dynamic Type) vẫn phải live-update khi đổi size trong editor.
 const componentFile = swiftFor('Components/PackageCardView/PackageCardView.swift')
-assert.match(componentFile.content, /title\.font = UIFontMetrics\([^\n]*systemFont\(ofSize: 16, weight: \.semibold\)/)
+assert.match(componentFile.content, /title\.font = UIFontMetrics\([^\n]*\n\s*\.scaledFont\(for: UIFont\.systemFont\(ofSize: 16, weight: \.semibold\)/)
 componentFile.content = componentFile.content.replace('systemFont(ofSize: 16, weight: .semibold)', 'systemFont(ofSize: 24, weight: .bold)')
 const title = compiled.componentPreviews.PackageCardView.children.find(child => child.outlet === 'title')
 assert.equal(title.style.fontSize, 24)
