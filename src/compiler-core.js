@@ -1620,11 +1620,21 @@ function sanitizeClassName(value, fallback) {
 }
 
 // Export để preview (compiler.js) đặt outlet y hệt code Swift sinh ra — lệch tên là live preview không match được.
+// Outlet là property của class UIView/UIControl sinh ra → trùng tên thuộc tính có sẵn (layer "Tag" → `tag`) gây lỗi
+// "conflicts with getter for 'tag' from superclass 'UIView'". Thêm hậu tố View như với keyword.
+const UIVIEW_MEMBERS = new Set([
+  'tag', 'frame', 'bounds', 'center', 'layer', 'alpha', 'window', 'superview', 'subviews', 'transform', 'mask',
+  'description', 'hash', 'next', 'state', 'isHidden', 'isOpaque', 'isEnabled', 'isSelected', 'isHighlighted',
+  'contentMode', 'tintColor', 'backgroundColor', 'clipsToBounds', 'constraints', 'gestureRecognizers',
+  'safeAreaInsets', 'safeAreaLayoutGuide', 'layoutMargins', 'traitCollection', 'undoManager', 'inputView',
+  'accessibilityLabel', 'accessibilityValue', 'accessibilityHint', 'semanticContentAttribute', 'contentView'
+])
+
 export function sanitizeOutletName(value) {
   const parts = foldDiacritics(value || '').replace(/[^A-Za-z0-9]+/g, ' ').trim().split(/\s+/).filter(Boolean)
   let result = joinWordsCapped(parts.map((part, index) => index === 0 ? part.charAt(0).toLowerCase() + part.slice(1) : part.charAt(0).toUpperCase() + part.slice(1))) || 'generatedView'
   if (/^[0-9]/.test(result)) result = `view${result}`
-  if (SWIFT_KEYWORDS.has(result)) result += 'View'
+  if (SWIFT_KEYWORDS.has(result) || UIVIEW_MEMBERS.has(result)) result += 'View'
   if (result.length < 3) result += 'View' // SwiftLint identifier_name requires >= 3 chars (e.g. a layer named "A")
   return result
 }

@@ -32,4 +32,9 @@ const tagPreviews = compiled.previewRoot.children.filter(child => child.classNam
 const iconHidden = tagPreviews.map(node => Boolean(node.previewChildren.find(child => child.outlet === 'icon')?.hidden))
 assert.deepEqual(iconHidden, [false, true, false])
 
+// Layer tên "Tag" không được thành outlet `tag` (trùng UIView.tag → lỗi compile "conflicts with getter for 'tag'").
+const offersXib = compiled.files.find(file => file.path === 'OffersView/OffersView.swift').content
+assert.match(offersXib, /@IBOutlet private weak var tagView: TagView!/)
+assert.doesNotMatch(offersXib, /var tag: /)
+
 console.log('✓ component properties (Figma TEXT/BOOLEAN names, variant class names) passed')
