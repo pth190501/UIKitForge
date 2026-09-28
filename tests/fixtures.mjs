@@ -61,3 +61,18 @@ export const cardScreen = { root: { id: '1:1', type: 'FRAME', name: 'Home', layo
       { id: '2:2', type: 'TEXT', name: 'Title', characters: 'Fast "Data"', style: { fontSize: 16, fontWeight: 600, textAlignHorizontal: 'CENTER', textAutoResize: 'HEIGHT' }, layoutSizingHorizontal: 'FILL', layoutSizingVertical: 'HUG', absoluteBoundingBox: { x: 28, y: 28, width: 334, height: 20 } },
       { id: '2:3', type: 'RECTANGLE', name: 'Hero', fills: [{ type: 'IMAGE', imageRef: 'x' }], opacity: 0.5, layoutSizingHorizontal: 'FIXED', layoutSizingVertical: 'FIXED', absoluteBoundingBox: { x: 28, y: 52, width: 40, height: 40 } }
     ] }] } }
+
+// Dữ liệu thật của Figma "Bán gói ngày" (34715:42593): gradient, vector/icon, hình xoay, text trộn đậm/thường,
+// 4 instance cùng component nhưng nội dung khác nhau. Plugin API bỏ qua node ẩn còn REST thì trả về: thêm lại
+// nhãn "Hot" (Scarcity) ẩn cho 2 card cuối để khớp dữ liệu app nhận được.
+const banNode = JSON.parse(readFileSync(new URL('./fixtures/ban-goi-ngay.json', import.meta.url), 'utf8'))
+{
+  const section = banNode.children[1].children[0].children[1].children[1]
+  const badge = section.children[0].children[0].children.find(child => child.name === 'Scarcity')
+  for (const card of section.children[1].children) {
+    const clone = JSON.parse(JSON.stringify(badge).replaceAll('31977:26511', card.id.split(';')[1]))
+    clone.visible = false
+    card.children.push(clone)
+  }
+}
+export const banGoiNgayScreen = { root: banNode }

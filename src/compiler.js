@@ -79,9 +79,25 @@ function syncComponentInstances(root, className, componentPreview) {
     else root.hidden = componentPreview.hidden
 
     root.previewChildren = cloneValue(componentPreview.children || [])
+    applyInstanceOverrides(root)
   }
 
   for (const child of root.children || []) syncComponentInstances(child, className, componentPreview)
+}
+
+// Preview component dùng chung (lấy từ instance gốc) → áp lại text/ẩn-hiện riêng của instance này, nếu không
+// mọi card cùng component sẽ hiện y hệt card đầu tiên.
+function applyInstanceOverrides(instance) {
+  if (!instance.overrides?.length) return
+  const byOutlet = new Map()
+  const walk = node => { if (node.outlet && !byOutlet.has(node.outlet)) byOutlet.set(node.outlet, node); for (const child of node.children || []) walk(child) }
+  for (const child of instance.previewChildren || []) walk(child)
+  for (const { slot, value } of instance.overrides) {
+    const target = byOutlet.get(slot.outlet)
+    if (!target) continue
+    if (slot.kind === 'text') target.text = value
+    else target.hidden = Boolean(value)
+  }
 }
 
 function schedulePreviewRefresh() {

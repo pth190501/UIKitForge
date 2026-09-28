@@ -19,33 +19,43 @@ export function compileUIKit(figmaData, requestedRootClass = '', options = {}) {
   const componentMap = new Map()
   const usedNames = new Set([rootClass])
 
-  for (const { componentId, node } of candidates.instances) {
+  for (const { componentId, node, all } of candidates.instances) {
     if (node.id === sourceRoot.id) continue
     let className = sanitizeClassName(`${node.name || 'Component'}View`, 'GeneratedComponentView')
     className = uniqueClassName(className, usedNames)
-    componentMap.set(componentId, { className, source: node })
+    componentMap.set(componentId, { className, source: node, instances: (all || [node]).filter(item => item.id !== sourceRoot.id) })
   }
 
   const colorRegistry = createColorRegistry()
   const files = []
   const components = []
   const componentIRs = []
+  const builtComponents = []
   for (const [componentId, entry] of componentMap.entries()) {
     const ir = buildIR(entry.source, null, componentMap, { skipComponentForNodeId: entry.source.id })
     dedupeOutlets(ir)
     ensureUniqueIds(ir)
+    ir.slots = componentSlots(ir, entry)
+    builtComponents.push({ componentId, entry, ir })
+  }
+  const mainIR = buildIR(sourceRoot, null, componentMap, { skipComponentForNodeId: sourceRoot.id })
+  dedupeOutlets(mainIR)
+  ensureUniqueIds(mainIR)
+  // Mỗi instance mang nội dung riêng (text/ẩn-hiện khác instance gốc) → gắn overrides để code gọi configure.
+  const rawById = indexRawTree(sourceRoot)
+  const slotsByClass = new Map(builtComponents.map(({ entry, ir }) => [entry.className, ir.slots]))
+  for (const ir of [mainIR, ...builtComponents.map(item => item.ir)]) annotateInstanceOverrides(ir, rawById, slotsByClass)
+
+  for (const { componentId, entry, ir } of builtComponents) {
     files.push(
-      { path: `Components/${entry.className}/${entry.className}.swift`, name: `${entry.className}.swift`, language: 'swift', content: generateSwift(entry.className, ir, colorRegistry), kind: 'component', target: 'uikit-xib' },
+      { path: `Components/${entry.className}/${entry.className}.swift`, name: `${entry.className}.swift`, language: 'swift', content: withConfigure(generateSwift(entry.className, ir, colorRegistry), ir.slots), kind: 'component', target: 'uikit-xib' },
       { path: `Components/${entry.className}/${entry.className}.xib`, name: `${entry.className}.xib`, language: 'xml', content: generateXib(entry.className, ir, deploymentTarget), kind: 'component', target: 'uikit-xib' },
-      { path: `UIKit-Code/Components/${entry.className}/${entry.className}.swift`, name: `${entry.className}.swift`, language: 'swift', content: generateSwiftProgrammatic(entry.className, ir, colorRegistry), kind: 'component', target: 'uikit-code' }
+      { path: `UIKit-Code/Components/${entry.className}/${entry.className}.swift`, name: `${entry.className}.swift`, language: 'swift', content: withConfigure(generateSwiftProgrammatic(entry.className, ir, colorRegistry), ir.slots), kind: 'component', target: 'uikit-code' }
     )
     components.push({ componentId, className: entry.className, sourceName: entry.source.name || 'Component' })
     componentIRs.push({ className: entry.className, ir })
   }
 
-  const mainIR = buildIR(sourceRoot, null, componentMap, { skipComponentForNodeId: sourceRoot.id })
-  dedupeOutlets(mainIR)
-  ensureUniqueIds(mainIR)
   files.unshift(
     { path: `${rootClass}/${rootClass}.xib`, name: `${rootClass}.xib`, language: 'xml', content: generateXib(rootClass, mainIR, deploymentTarget), kind: 'main', target: 'uikit-xib' },
     { path: `${rootClass}/${rootClass}.swift`, name: `${rootClass}.swift`, language: 'swift', content: generateSwift(rootClass, mainIR, colorRegistry), kind: 'main', target: 'uikit-xib' },
@@ -63,6 +73,79 @@ export function compileUIKit(figmaData, requestedRootClass = '', options = {}) {
     rootClass, deploymentTarget, sourceRoot, previewRoot: mainIR, files, components, componentIRs,
     colorRegistry, colors: colorRegistry.entries(), warnings: [...new Set(warnings)]
   }
+}
+
+// ---- Nội dung riêng từng instance (text override / ẩn-hiện) ----
+// Id node bên trong instance có dạng `<instanceId>;<id trong component>` — phần sau là khoá chung giữa mọi instance.
+function internalKey(rawId, instanceId) {
+  const prefix = `${instanceId};`
+  return String(rawId || '').startsWith(prefix) ? String(rawId).slice(prefix.length) : null
+}
+
+function indexRawTree(root) {
+  const byId = new Map()
+  const visit = node => { byId.set(node.id, node); for (const child of node.children || []) visit(child) }
+  visit(root)
+  return byId
+}
+
+function indexInstance(instance) {
+  const byKey = new Map()
+  const visit = node => {
+    const key = internalKey(node.id, instance.id)
+    if (key) byKey.set(key, node)
+    for (const child of node.children || []) visit(child)
+  }
+  for (const child of instance.children || []) visit(child)
+  return byKey
+}
+
+// Slot = chỗ trong component mà ít nhất một instance khác instance gốc: text (label) hoặc ẩn/hiện (bất kỳ view).
+function componentSlots(ir, entry) {
+  const indexes = entry.instances.map(indexInstance)
+  const slots = []
+  for (const node of flatten(ir).slice(1)) {
+    const key = internalKey(node.figmaId, entry.source.id)
+    if (!key) continue
+    if (node.kind === 'label' && indexes.some(index => { const raw = index.get(key); return raw?.type === 'TEXT' && String(raw.characters ?? '') !== node.text })) {
+      slots.push({ kind: 'text', key, nodeId: node.id, outlet: node.outlet, param: `${node.outlet}Text`, fallback: node.text })
+    }
+    if (indexes.some(index => { const raw = index.get(key); return !raw || raw.visible === false })) {
+      slots.push({ kind: 'hidden', key, nodeId: node.id, outlet: node.outlet, param: `${node.outlet}Hidden`, fallback: false })
+    }
+  }
+  return slots
+}
+
+function annotateInstanceOverrides(root, rawById, slotsByClass) {
+  for (const node of flatten(root)) {
+    const slots = node.kind === 'component' ? slotsByClass.get(node.className) : null
+    const raw = rawById.get(node.figmaId)
+    if (!slots?.length || !raw) continue
+    const index = indexInstance(raw)
+    node.overrides = slots.map(slot => {
+      const target = index.get(slot.key)
+      const value = slot.kind === 'text' ? (target?.type === 'TEXT' ? String(target.characters ?? '') : slot.fallback) : (!target || target.visible === false)
+      return { slot, value }
+    })
+  }
+}
+
+// Thêm `struct Content` + `configure(with:)` vào class component. Dùng struct thay vì nhiều tham số để không
+// vượt function_parameter_count (SwiftLint) khi component có nhiều text/ẩn-hiện khác nhau giữa các instance.
+function withConfigure(swift, slots) {
+  if (!slots?.length) return swift
+  const fields = slots.map(slot => `        let ${slot.param}: ${slot.kind === 'text' ? 'String' : 'Bool'}`)
+  const assigns = slots.map(slot => slot.kind === 'text'
+    ? `        ${slot.outlet}.text = content.${slot.param}`
+    : `        ${slot.outlet}.isHidden = content.${slot.param}`)
+  const block = `\n    struct Content {\n${fields.join('\n')}\n    }\n\n    func configure(with content: Content) {\n${assigns.join('\n')}\n    }\n}\n`
+  return swift.replace(/\n}\n$/, `\n${block}`)
+}
+
+function configureCallLines(target, overrides) {
+  const args = overrides.map(({ slot, value }, index) => `            ${slot.param}: ${slot.kind === 'text' ? swiftString(value) : String(value)}${index < overrides.length - 1 ? ',' : ''}`)
+  return [`        ${target}configure(with: .init(`, ...args, '        ))']
 }
 
 function pickRenderableRoot(root, warnings) {
@@ -405,6 +488,7 @@ function generateSwiftStyleLines(root, { includeStatic = false, rootRef = 'conte
     const target = targetRef === 'self' ? '' : `${targetRef}.` // self ngầm định — tránh redundantSelf của SwiftFormat
     const hint = node.outlet || 'root'
     const style = node.style || {}
+    if (index > 0 && node.kind === 'component' && node.overrides?.length) lines.push(...configureCallLines(target, node.overrides))
     if (includeStatic && style.background) lines.push(`        ${target}backgroundColor = ${namedColor(colorRegistry, style.background, `${hint}Background`)}`)
     if (style.radius > 0) {
       lines.push(`        ${target}layer.cornerRadius = ${formatNumber(style.radius)}`)
@@ -500,7 +584,24 @@ function swiftTextAlignment(value) { if (value === 'center') return 'center'; if
 
 // Sinh view hoàn toàn bằng code (không XIB): cùng IR, cùng constraint format với generateXib,
 // chỉ đổi cách emit sang NSLayoutConstraint anchor. Dùng khi user chọn output UIKit-Code.
+// Tên layer Figma tự sinh ("Frame 2085667793") làm outlet dài → dòng constraint dễ vượt 120 ký tự (line_length).
+// Tách tham số ra từng dòng thay vì tắt rule, vì đây là code người dùng sẽ đọc/sửa.
+function wrapLongConstraintLines(swift) {
+  return swift.split('\n').map(line => {
+    if (line.length <= 120) return line
+    const match = line.match(/^(\s*)(.*\.constraint\()(.*)(\)(?:\.isActive = true)?)$/)
+    if (!match) return line
+    const [, pad, head, args, tail] = match
+    const parts = args.split(', ')
+    return [`${pad}${head}`, ...parts.map((part, index) => `${pad}    ${part}${index < parts.length - 1 ? ',' : ''}`), `${pad}${tail}`].join('\n')
+  }).join('\n')
+}
+
 export function generateSwiftProgrammatic(className, root, colorRegistry) {
+  return wrapLongConstraintLines(generateSwiftProgrammaticRaw(className, root, colorRegistry))
+}
+
+function generateSwiftProgrammaticRaw(className, root, colorRegistry) {
   const descendants = flatten(root).slice(1)
   const refs = new Map([[root.id, 'self']])
   const figmaRefs = new Map([[root.figmaId, 'self']])

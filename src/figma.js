@@ -178,8 +178,14 @@ export function summarizeFigmaTree(root) {
   return { nodes, maxDepth, instances, components, images, counts }
 }
 
+function countVisible(node) {
+  if (!node || node.visible === false) return 0
+  return 1 + (node.children || []).reduce((sum, child) => sum + countVisible(child), 0)
+}
+
 export function findComponentCandidates(root) {
   const byComponentId = new Map()
+  const allInstances = new Map()
   const explicitComponents = []
 
   // Bỏ cả nhánh đang ẩn (visible:false): compiler không vẽ chúng, nên sinh class component cho chúng
@@ -188,8 +194,13 @@ export function findComponentCandidates(root) {
   const visit = (node, isRoot = false) => {
     if (!node || (!isRoot && node.visible === false)) return
     if (node.type === 'COMPONENT') explicitComponents.push(node)
-    if (node.type === 'INSTANCE' && node.componentId && !byComponentId.has(node.componentId)) {
-      byComponentId.set(node.componentId, node)
+    if (node.type === 'INSTANCE' && node.componentId) {
+      if (!allInstances.has(node.componentId)) allInstances.set(node.componentId, [])
+      allInstances.get(node.componentId).push(node)
+      // Instance làm gốc cho class component: chọn cái có nhiều node đang hiển thị nhất, để phần tử bị ẩn ở vài
+      // instance (vd nhãn "Hot") vẫn có trong class và còn bật/tắt được qua configure.
+      const current = byComponentId.get(node.componentId)
+      if (!current || countVisible(node) > countVisible(current)) byComponentId.set(node.componentId, node)
     }
     for (const child of node.children || []) visit(child)
   }
@@ -197,7 +208,7 @@ export function findComponentCandidates(root) {
 
   return {
     explicitComponents,
-    instances: [...byComponentId.entries()].map(([componentId, node]) => ({ componentId, node }))
+    instances: [...byComponentId.entries()].map(([componentId, node]) => ({ componentId, node, all: allInstances.get(componentId) }))
   }
 }
 

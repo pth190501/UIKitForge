@@ -14,9 +14,14 @@ export function clonePreviewTree(root) {
 export function applySwiftPreview(sourceRoot, swiftCode, { namedColors = {} } = {}) {
   const root = clonePreviewTree(sourceRoot)
   const targets = new Map([['contentView', root]])
-  walkPreview(root, node => {
-    if (node !== root && node.outlet) targets.set(node.outlet, node)
-  })
+  // Không đi vào bên trong component: outlet bên trong thuộc file Swift của component, trùng tên với outlet
+  // màn chính (vd `title`) sẽ làm phép gán của màn chính rơi nhầm vào view con của component.
+  const collect = node => {
+    if (node !== root && node.outlet && !targets.has(node.outlet)) targets.set(node.outlet, node)
+    if (node !== root && node.kind === 'component') return
+    for (const child of node.children?.length ? node.children : (node.previewChildren || [])) collect(child)
+  }
+  collect(root)
 
   for (const [targetName, node] of targets) {
     // (?<![\w.]) chặn match nhầm outlet trùng hậu tố (title vs subtitle.x). Root: biến thể XIB gán qua

@@ -73,11 +73,21 @@ function generateScreenView(names, root, api, texts, colorRegistry, arch = 'mvvm
 
 function generateComponentView(className, root, api, colorRegistry) {
   const ctx = createContext(api, null, colorRegistry)
+  // Nội dung khác nhau giữa các instance → `var` có giá trị mặc định (instance gốc); memberwise init cho phép
+  // màn chính truyền giá trị riêng từng instance mà không cần viết init tay.
+  const slots = root.slots || []
+  ctx.textSlots = new Map(slots.filter(slot => slot.kind === 'text').map(slot => [slot.nodeId, slot.param]))
+  ctx.hiddenSlots = new Map(slots.filter(slot => slot.kind === 'hidden').map(slot => [slot.nodeId, slot.param]))
+  for (const slot of slots) ctx.used.add(slot.param)
+  const slotLines = slots
+    .map(slot => `    var ${slot.param} = ${slot.kind === 'text' ? swiftString(slot.fallback) : 'false'}`)
+    .flatMap(line => line.length > 120 ? ['    // swiftlint:disable:next line_length', line] : [line])
+  const stored = slotLines.length ? `${slotLines.join('\n')}\n\n` : ''
   const body = renderContent(root, ctx, true)
   const preview = api.observation
     ? `#Preview {\n    ${className}()\n}`
     : `struct ${className}Previews: PreviewProvider {\n    static var previews: some View {\n        ${className}()\n    }\n}`
-  return `import SwiftUI\n\nstruct ${className}: View {\n    var body: some View {\n${indent(body, 2).join('\n')}\n    }\n}\n${sectionsExtension(className, ctx)}\n${preview}\n`
+  return `import SwiftUI\n\nstruct ${className}: View {\n${stored}    var body: some View {\n${indent(body, 2).join('\n')}\n    }\n}\n${sectionsExtension(className, ctx)}\n${preview}\n`
 }
 
 function textProperties(texts, api) {
@@ -124,6 +134,12 @@ function sectionsExtension(typeName, ctx) {
 
 // Thứ tự modifier: nội dung → kích thước → style → vị trí, để background/clip phủ đúng khung như UIView.
 function renderContent(node, ctx, isRoot = false, sizeModifiers = []) {
+  // Phần tử ẩn ở vài instance: bọc Group + if để modifier vị trí/kích thước của cha vẫn gắn hợp lệ, và khi ẩn thì
+  // rút khỏi stack như UIView.isHidden trong UIStackView.
+  if (!isRoot && ctx.hiddenSlots?.has(node.id) && ctx.skipHidden !== node.id) {
+    const inner = renderContent(node, { ...ctx, skipHidden: node.id }, false, sizeModifiers)
+    return ['Group {', `    if !${ctx.hiddenSlots.get(node.id)} {`, ...indent(inner, 2), '    }', '}']
+  }
   if (!isRoot && node.kind === 'view' && node.children.length) {
     const name = uniqueName(ctx, `${node.outlet}Section`)
     const section = { name, lines: [] }
@@ -136,20 +152,28 @@ function renderContent(node, ctx, isRoot = false, sizeModifiers = []) {
     return expression([base], [...modifiers, ...sizeModifiers, ...styleModifiers(node, false, ctx)])
   }
   if (node.kind === 'image') return expression([`Image(${swiftString(node.outlet)})`], ['.resizable()', '.scaledToFit()', ...sizeModifiers, ...styleModifiers(node, true, ctx)])
-  if (node.kind === 'component') return expression([`${node.className}()`], sizeModifiers)
+  if (node.kind === 'component') return expression(componentCall(node), sizeModifiers)
   const { base, modifiers } = containerLines(node, ctx)
   return expression(base, [...modifiers, ...sizeModifiers, ...styleModifiers(node, true, ctx)])
 }
 
-// SwiftFormat: modifier sau view một dòng thì thụt vào; sau block kết thúc bằng "}" thì thẳng hàng.
+// SwiftFormat: modifier sau view một dòng thì thụt vào; sau block/lời gọi nhiều dòng (kết thúc "}" hoặc ")") thì thẳng hàng.
 function expression(lines, modifiers) {
-  return [...lines, ...(lines[0].endsWith('{') ? modifiers : indent(modifiers, 1))]
+  return [...lines, ...(lines[0].endsWith('{') || lines[0].endsWith('(') ? modifiers : indent(modifiers, 1))]
+}
+
+function componentCall(node) {
+  if (!node.overrides?.length) return [`${node.className}()`]
+  const args = node.overrides.map(({ slot, value }, index) => `    ${slot.param}: ${slot.kind === 'text' ? swiftString(value) : String(value)}${index < node.overrides.length - 1 ? ',' : ''}`)
+  return [`${node.className}(`, ...args, ')']
 }
 
 function labelLines(node, ctx) {
   const { style } = node
   let textExpression = swiftString(node.text)
-  if (ctx.texts) {
+  if (ctx.textSlots?.has(node.id)) {
+    textExpression = ctx.textSlots.get(node.id)
+  } else if (ctx.texts) {
     const property = uniqueName(ctx, node.outlet === 'router' ? 'routerText' : node.outlet)
     ctx.texts.push({ property, value: node.text })
     textExpression = `${ctx.owner}.${property}`

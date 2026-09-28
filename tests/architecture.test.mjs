@@ -62,9 +62,9 @@ for (const [arch, compiled] of Object.entries({ 'mvvm-r': mvvmr, mvvm, mvc, vipe
 }
 
 // Mọi kiến trúc × fixture × iOS target: dòng ≤ 120 ký tự (trừ dòng đã tắt line_length) — CI chạy swiftlint --strict.
-const { layoutScreen, feedSlotScreen } = await import('./fixtures.mjs')
+const { layoutScreen, feedSlotScreen, banGoiNgayScreen } = await import('./fixtures.mjs')
 for (const architecture of ['mvvm-r', 'mvvm', 'mvc', 'viper']) {
-  for (const data of [cardScreen, layoutScreen, feedSlotScreen]) {
+  for (const data of [cardScreen, layoutScreen, feedSlotScreen, banGoiNgayScreen]) {
     for (const deploymentTarget of [13, 17]) {
     // Tên màn hình dài thực tế — VIPER sinh nhiều tên ghép (…InteractorOutputProtocol) dễ vượt 120 ký tự.
     for (const rootClass of ['GeneratedView', 'MaintenanceNotificationFeedView']) {

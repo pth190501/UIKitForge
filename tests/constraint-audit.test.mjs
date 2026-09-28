@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict'
 import { compileUIKit } from '../src/compiler.js'
-import { cardScreen, feedSlotScreen, layoutScreen } from './fixtures.mjs'
+import { banGoiNgayScreen, cardScreen, feedSlotScreen, layoutScreen } from './fixtures.mjs'
 
 // Auto Layout không cần "4 constraint/view" mà cần xác định được đủ x, y, width, height:
 // - view tự do (không trong UIStackView): đủ 2 constraint mỗi trục, hoặc 1 nếu có intrinsic size;
@@ -38,7 +38,7 @@ function auditLayout(compiled) {
   return issues
 }
 
-for (const [name, data] of Object.entries({ layoutScreen, cardScreen, feedSlotScreen })) {
+for (const [name, data] of Object.entries({ layoutScreen, cardScreen, feedSlotScreen, banGoiNgayScreen })) {
   const issues = auditLayout(compileUIKit(data, 'GeneratedView', { deploymentTarget: 13 }))
   assert.deepEqual(issues, [], `${name}: ambiguous Auto Layout\n${issues.join('\n')}`)
 }
