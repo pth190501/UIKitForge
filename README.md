@@ -30,6 +30,7 @@ UIKitForge is an experimental web IDE that reads a Figma node using a user-provi
   - label `text`
   - label `font`
   - label `numberOfLines`
+  - colors as `UIColor(red:green:blue:alpha:)` or `UIColor(named:)` (resolved against the generated `Colors.xcassets` names), and fonts wrapped in `UIFontMetrics` for Dynamic Type
 - Optional uploaded reference image overlay.
 - Quantitative pixel-diff match % between the rasterized preview and the reference image (see [Pixel-diff comparison](#pixel-diff-comparison)).
 - Click any preview node to inspect frame, style and inferred constraints.
@@ -112,11 +113,11 @@ Web IDE
 
 Browser Preview is intentionally a **fast approximation**, not UIKit itself.
 
-The generated XIB XML has not yet been passed through Apple's `ibtool`, and generated Swift has not yet been compiled by Xcode. Because Xcode tooling only runs on macOS, true native validation requires the planned macOS agent.
+Native validation is partial: the `native-validate` CI job (macOS runner, `.github/workflows/ci.yml`) runs `swiftc -typecheck` (iOS 13 + 17, UIKit + SwiftUI), `ibtool --compile` and `swiftlint --strict` on output generated from the test fixtures. It does not yet build a full app with `xcodebuild` or render on a Simulator — that still requires the planned macOS agent. CI runs on pushes to `main` and on pull requests targeting `main`.
 
 Other current limitations:
 
-- Figma image fills create `UIImageView` placeholders; image binary export is not implemented yet.
+- Figma image fills are exported to `Assets.xcassets` at @2x/@3x when you download the ZIP (requires a Figma token; the export URLs expire, so re-generate if the download is old). Screenshot-only mode produces no image assets.
 - Complex vectors, masks, blend modes, gradients and advanced effects are not fully translated yet.
 - XIB edits do not currently re-parse into Browser Preview.
 - Browser preview does not execute arbitrary Swift. It recognizes a safe/common subset of UIKit style assignments.
@@ -126,7 +127,6 @@ Other current limitations:
 
 ### Phase 1.1
 
-- Figma image endpoint + asset download/export.
 - Gradients.
 - Better Auto Layout / Figma Auto Layout mapping.
 - Isolated component preview polish.
