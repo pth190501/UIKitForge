@@ -377,7 +377,7 @@ function currentPreviewRoot() {
   if (file?.kind === 'component') { const className = file.name.replace(/\.(swift|xib)$/i, ''); return state.compiled.componentPreviews?.[className] || state.compiled.previewRoot }
   if (state.outputTarget === 'swiftui') return state.compiled.previewRoot // cú pháp SwiftUI không khớp regex applySwiftPreview (viết cho UIKit)
   const mainSwift = state.compiled.files.find(item => item.kind === 'main' && item.language === 'swift' && item.target === state.outputTarget)
-  return mainSwift ? applySwiftPreview(state.compiled.previewRoot, mainSwift.content) : state.compiled.previewRoot
+  return mainSwift ? applySwiftPreview(state.compiled.previewRoot, mainSwift.content, { namedColors: state.compiled.namedColors }) : state.compiled.previewRoot
 }
 function previewDisplayName(file, root) { return file?.kind === 'component' ? file.name.replace(/\.(swift|xib)$/i, '') : state.compiled?.rootClass || root?.name || 'UIKit layout' }
 

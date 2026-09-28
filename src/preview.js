@@ -4,7 +4,9 @@ export function clonePreviewTree(root) {
     : JSON.parse(JSON.stringify(root))
 }
 
-export function applySwiftPreview(sourceRoot, swiftCode) {
+// namedColors: { assetName: 'rgba(...)' } từ color registry — code sinh ra dùng UIColor(named:) nên cần bảng
+// này mới dịch ngược được màu về preview; tên asset lạ (user tự gõ) thì bỏ qua, giữ style gốc.
+export function applySwiftPreview(sourceRoot, swiftCode, { namedColors = {} } = {}) {
   const root = clonePreviewTree(sourceRoot)
   const targets = new Map([['contentView', root]])
   walkPreview(root, node => {
@@ -12,38 +14,42 @@ export function applySwiftPreview(sourceRoot, swiftCode) {
   })
 
   for (const [targetName, node] of targets) {
-    const escaped = escapeRegExp(targetName)
+    // (?<![\w.]) chặn match nhầm outlet trùng hậu tố (title vs subtitle.x). Root: biến thể XIB gán qua
+    // `contentView.`, biến thể Code gán thẳng trên self (`backgroundColor = ...`) nên tiền tố là optional.
+    const prefix = node === root
+      ? '(?<![\\w.])(?:contentView\\.)?'
+      : `(?<![\\w.])${escapeRegExp(targetName)}\\.`
     const style = node.style || (node.style = {})
 
-    const background = matchColor(swiftCode, `${escaped}\\.backgroundColor`)
+    const background = matchColor(swiftCode, `${prefix}backgroundColor`, namedColors)
     if (background) style.background = background
 
-    const textColor = matchColor(swiftCode, `${escaped}\\.textColor`)
+    const textColor = matchColor(swiftCode, `${prefix}textColor`, namedColors)
     if (textColor) style.textColor = textColor
 
-    const borderColor = matchColor(swiftCode, `${escaped}\\.layer\\.borderColor`, true)
+    const borderColor = matchColor(swiftCode, `${prefix}layer\\.borderColor`, namedColors)
     if (borderColor) style.borderColor = borderColor
 
-    const radius = matchNumber(swiftCode, `${escaped}\\.layer\\.cornerRadius`)
+    const radius = matchNumber(swiftCode, `${prefix}layer\\.cornerRadius`)
     if (radius != null) style.radius = radius
 
-    const borderWidth = matchNumber(swiftCode, `${escaped}\\.layer\\.borderWidth`)
+    const borderWidth = matchNumber(swiftCode, `${prefix}layer\\.borderWidth`)
     if (borderWidth != null) style.borderWidth = borderWidth
 
-    const alpha = matchNumber(swiftCode, `${escaped}\\.alpha`)
+    const alpha = matchNumber(swiftCode, `${prefix}alpha`)
     if (alpha != null) style.opacity = alpha
 
-    const hidden = matchBoolean(swiftCode, `${escaped}\\.isHidden`)
+    const hidden = matchBoolean(swiftCode, `${prefix}isHidden`)
     if (hidden != null) node.hidden = hidden
 
     if (node.kind === 'label') {
-      const text = matchSwiftString(swiftCode, `${escaped}\\.text`)
+      const text = matchSwiftString(swiftCode, `${prefix}text`)
       if (text != null) node.text = text
 
-      const lines = matchNumber(swiftCode, `${escaped}\\.numberOfLines`)
+      const lines = matchNumber(swiftCode, `${prefix}numberOfLines`)
       if (lines != null) style.numberOfLines = lines
 
-      const font = matchFont(swiftCode, escaped)
+      const font = matchFont(swiftCode, `${prefix}font`)
       if (font) {
         style.fontSize = font.size
         style.fontWeight = font.weight
@@ -341,11 +347,12 @@ function imageScaleMode(value) {
   return 'cover'
 }
 
-function matchColor(source, lhsPattern, allowsCgColor = false) {
-  const suffix = allowsCgColor ? '(?:\\.cgColor)?' : ''
-  const pattern = new RegExp(`${lhsPattern}\\s*=\\s*UIColor\\(red:\\s*([\\d.]+),\\s*green:\\s*([\\d.]+),\\s*blue:\\s*([\\d.]+),\\s*alpha:\\s*([\\d.]+)\\)${suffix}`)
+// Một regex cho cả literal UIColor(red:...) lẫn UIColor(named:) để phép gán xuất hiện trước thắng, như cũ.
+function matchColor(source, lhsPattern, namedColors = {}) {
+  const pattern = new RegExp(`${lhsPattern}\\s*=\\s*UIColor\\((?:red:\\s*([\\d.]+),\\s*green:\\s*([\\d.]+),\\s*blue:\\s*([\\d.]+),\\s*alpha:\\s*([\\d.]+)|named:\\s*"([^"]+)")\\)`)
   const match = source.match(pattern)
   if (!match) return null
+  if (match[5] != null) return Object.hasOwn(namedColors, match[5]) ? namedColors[match[5]] : null
   return `rgba(${Math.round(Number(match[1]) * 255)}, ${Math.round(Number(match[2]) * 255)}, ${Math.round(Number(match[3]) * 255)}, ${Number(match[4])})`
 }
 
@@ -368,8 +375,10 @@ function matchSwiftString(source, lhsPattern) {
     .replace(/\\\\/g, '\\')
 }
 
-function matchFont(source, escapedTarget) {
-  const pattern = new RegExp(`${escapedTarget}\\.font\\s*=\\s*\\.systemFont\\(ofSize:\\s*([\\d.]+),\\s*weight:\\s*\\.([A-Za-z]+)\\)`)
+// Chấp nhận cả `.systemFont(...)` trần lẫn bản bọc UIFontMetrics(...).scaledFont(for: UIFont.systemFont(...))
+// (Dynamic Type) — chỉ quét trong cùng 1 dòng gán để không bắt nhầm font của dòng khác.
+function matchFont(source, lhsPattern) {
+  const pattern = new RegExp(`${lhsPattern}\\s*=[^\\n]*?systemFont\\(ofSize:\\s*([\\d.]+),\\s*weight:\\s*\\.([A-Za-z]+)\\)`)
   const match = source.match(pattern)
   if (!match) return null
   return { size: Number(match[1]), weight: fontWeightNumber(match[2]) }
