@@ -1,5 +1,6 @@
 import { findComponentCandidates, firstVisibleSolidPaint } from './figma.js'
 import { createColorRegistry } from './color-registry.js'
+import { foldDiacritics } from './identifier.js'
 
 const VIEW_TYPES = new Set([
   'FRAME', 'GROUP', 'SECTION', 'COMPONENT', 'COMPONENT_SET', 'INSTANCE', 'SLOT',
@@ -775,14 +776,14 @@ function swiftType(node) {
 }
 
 function sanitizeClassName(value, fallback) {
-  const parts = String(value || '').replace(/[^A-Za-z0-9]+/g, ' ').trim().split(/\s+/).filter(Boolean)
+  const parts = foldDiacritics(value || '').replace(/[^A-Za-z0-9]+/g, ' ').trim().split(/\s+/).filter(Boolean)
   let result = parts.map(part => part.charAt(0).toUpperCase() + part.slice(1)).join('') || fallback
   if (/^[0-9]/.test(result)) result = `View${result}`
   return result
 }
 
 function sanitizeOutletName(value) {
-  const parts = String(value || '').replace(/[^A-Za-z0-9]+/g, ' ').trim().split(/\s+/).filter(Boolean)
+  const parts = foldDiacritics(value || '').replace(/[^A-Za-z0-9]+/g, ' ').trim().split(/\s+/).filter(Boolean)
   let result = parts.map((part, index) => index === 0 ? part.charAt(0).toLowerCase() + part.slice(1) : part.charAt(0).toUpperCase() + part.slice(1)).join('') || 'generatedView'
   if (/^[0-9]/.test(result)) result = `view${result}`
   if (SWIFT_KEYWORDS.has(result)) result += 'View'

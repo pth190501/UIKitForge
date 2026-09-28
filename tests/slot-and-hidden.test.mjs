@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict'
 import { compileUIKit } from '../src/compiler.js'
+import { foldDiacritics } from '../src/identifier.js'
 import { feedSlotScreen } from './fixtures.mjs'
 
 const compiled = compileUIKit(feedSlotScreen, 'GeneratedView', { deploymentTarget: 13 })
@@ -45,4 +46,14 @@ const hiddenRoot = structuredClone(feedSlotScreen)
 hiddenRoot.root.visible = false
 assert.ok(compileUIKit(hiddenRoot, 'GeneratedView', { deploymentTarget: 13 }).components.some(c => c.className === 'EmiAvatarView'))
 
-console.log('✓ SLOT containers, unknown container types, hidden-instance components passed')
+// Tên outlet từ layer tiếng Việt: bỏ dấu thay vì xoá ký tự (trước: `emiBOTr`, `emiBOLChBOTrMNgHMNay`).
+const outlets = []
+const collectOutlets = node => { outlets.push(node.outlet); for (const child of node.children || []) collectOutlets(child) }
+collectOutlets(compiled.previewRoot)
+for (const outlet of ['emiBaoTri', 'emiBaoLichBaoTriMangHomNay', 'khuVucLongBienTamNgungKetNoi']) {
+  assert.ok(outlets.includes(outlet), `outlet ${outlet} expected, got ${outlets.join(', ')}`)
+}
+assert.match(compiled.files.find(file => file.path === 'GeneratedView/GeneratedView.swift').content, /@IBOutlet private weak var emiBaoTri: UILabel!/)
+assert.equal(foldDiacritics('Đặt lịch đi'), 'Dat lich di')
+
+console.log('✓ SLOT containers, unknown container types, hidden-instance components, Vietnamese outlet names passed')

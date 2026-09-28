@@ -4,6 +4,7 @@ import { applySwiftPreview } from './preview.js'
 import { generateSwiftUIFiles } from './swiftui.js'
 import { generateUIKitMVVMFiles } from './uikit-router.js'
 import { LINT_CONFIG_FILES } from './lint-config.js'
+import { foldDiacritics } from './identifier.js'
 
 export function compileUIKit(figmaData, requestedRootClass = '', options = {}) {
   const result = compileCore(figmaData, requestedRootClass, options)
@@ -284,7 +285,7 @@ function colorToRgba(color) {
 }
 
 function sanitizeOutletName(value) {
-  const parts = String(value || '')
+  const parts = foldDiacritics(value || '')
     .replace(/[^A-Za-z0-9]+/g, ' ')
     .trim()
     .split(/\s+/)

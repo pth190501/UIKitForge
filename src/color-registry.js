@@ -1,3 +1,5 @@
+import { foldDiacritics } from './identifier.js'
+
 // Gom màu sắc dùng trong toàn bộ 1 lần compile (UIKit + SwiftUI, main screen + mọi component) thành các
 // named color dùng chung, thay vì UIColor(red:green:blue:alpha:)/Color(red:...) rải rác. Cùng giá trị RGBA
 // luôn map về cùng 1 tên (dedupe theo giá trị), nên UIKit và SwiftUI tham chiếu đúng một Color Asset,
@@ -28,7 +30,7 @@ export function createColorRegistry() {
 }
 
 function sanitizeHint(hint) {
-  const parts = String(hint || 'color').replace(/[^A-Za-z0-9]+/g, ' ').trim().split(/\s+/).filter(Boolean)
+  const parts = foldDiacritics(hint || 'color').replace(/[^A-Za-z0-9]+/g, ' ').trim().split(/\s+/).filter(Boolean)
   const joined = parts
     .map((part, index) => index === 0 ? part.charAt(0).toLowerCase() + part.slice(1) : part.charAt(0).toUpperCase() + part.slice(1))
     .join('') || 'color'
