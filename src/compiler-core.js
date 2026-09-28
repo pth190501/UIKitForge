@@ -558,6 +558,48 @@ function withConfigure(swift, slots) {
   return swift.replace(/\n}\n$/, `\n${block}`)
 }
 
+// Nhiều instance cùng component có nội dung riêng → gom thành mảng dữ liệu + vòng lặp thay cho N lệnh configure rời:
+// chỗ thay bằng dữ liệu thật (API/ViewModel) chỉ còn một mảng. Chỉ đổi phần dữ liệu, cây view/constraint giữ nguyên
+// (XIB không có vòng lặp).
+export function repeatedInstanceGroups(root) {
+  const byClass = new Map()
+  for (const node of flatten(root).slice(1)) {
+    if (node.kind !== 'component' || !node.overrides?.length) continue
+    if (!byClass.has(node.className)) byClass.set(node.className, [])
+    byClass.get(node.className).push(node)
+  }
+  return [...byClass.entries()].filter(([, nodes]) => nodes.length > 1).map(([className, nodes]) => ({
+    className, nodes, name: `${lowerFirst(className.replace(/View$/, '') || className).slice(0, 35)}Items`
+  }))
+}
+
+function lowerFirst(value) {
+  return value.charAt(0).toLowerCase() + value.slice(1)
+}
+
+function instanceGroupLines({ className, nodes, name }) {
+  const items = nodes.flatMap((node, index) => [
+    '            .init(',
+    ...node.overrides.map(({ slot, value }, argIndex) => {
+      const line = `                ${slot.param}: ${slot.kind === 'text' ? swiftString(value) : String(value)}${argIndex < node.overrides.length - 1 ? ',' : ''}`
+      return line.length > 120 ? `                // swiftlint:disable:next line_length\n${line}` : line
+    }),
+    `            )${index < nodes.length - 1 ? ',' : ''}`
+  ])
+  // Kiểu tường minh: outlet XIB là IUO (`View!`), để suy luận thì mảng thành [View?] và không gọi được configure.
+  const viewsName = name.replace(/Items$/, 'Views')
+  const viewsLine = `        let ${viewsName}: [${className}] = [${nodes.map(node => node.outlet).join(', ')}]`
+  return [
+    `        let ${name}: [${className}.Content] = [`,
+    ...items,
+    '        ]',
+    ...(viewsLine.length <= 120 ? [viewsLine] : [`        let ${viewsName}: [${className}] = [`, ...nodes.map((node, index) => `            ${node.outlet}${index < nodes.length - 1 ? ',' : ''}`), '        ]']),
+    `        for (view, content) in zip(${viewsName}, ${name}) {`,
+    '            view.configure(with: content)',
+    '        }'
+  ]
+}
+
 function configureCallLines(target, overrides) {
   const args = overrides.map(({ slot, value }, index) => `            ${slot.param}: ${slot.kind === 'text' ? swiftString(value) : String(value)}${index < overrides.length - 1 ? ',' : ''}`)
   return [`        ${target}configure(with: .init(`, ...args, '        ))']
@@ -1081,13 +1123,16 @@ function generateSwift(className, root, colorRegistry) {
 // background/text/textColor/numberOfLines/textAlignment/contentMode; XIB variant giữ false để tránh set trùng.
 function generateSwiftStyleLines(root, { includeStatic = false, rootRef = 'contentView', colorRegistry } = {}) {
   const lines = []
+  const grouped = repeatedInstanceGroups(root)
+  for (const group of grouped) lines.push(...instanceGroupLines(group))
+  const groupedIds = new Set(grouped.flatMap(group => group.nodes.map(node => node.id)))
   for (const [index, node] of flatten(root).entries()) {
     const targetRef = index === 0 ? rootRef : node.outlet
     const target = targetRef === 'self' ? '' : `${targetRef}.` // self ngầm định — tránh redundantSelf của SwiftFormat
     const hint = node.outlet || 'root'
     const style = node.style || {}
     if (includeStatic) lines.push(...todoCommentLines(node, '        '))
-    if (index > 0 && node.kind === 'component' && node.overrides?.length) lines.push(...configureCallLines(target, node.overrides))
+    if (index > 0 && node.kind === 'component' && node.overrides?.length && !groupedIds.has(node.id)) lines.push(...configureCallLines(target, node.overrides))
     // Bán kính khác nhau thật sự (không chỉ bật/tắt góc) → nền + viền vẽ bằng CornerRadiiShapeView thay cho
     // backgroundColor/cornerRadius/border của layer; gradient vẫn dùng góc lớn nhất (còn TODO).
     // Helper nền đều chèn ở index 0 → dòng sinh trước nằm trên: inner shadow → nền (shape/gradient/ảnh) → blur.

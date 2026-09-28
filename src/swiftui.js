@@ -1,4 +1,4 @@
-import { blurMaterial, formatNumber, isSystemFontFamily, todoCommentLines, parseRgba, swiftFontWeight, swiftString } from './compiler-core.js'
+import { blurMaterial, formatNumber, isSystemFontFamily, repeatedInstanceGroups, todoCommentLines, parseRgba, swiftFontWeight, swiftString } from './compiler-core.js'
 import { normalizeArchitecture, viperEntity, viperInteractor, viperNames, viperSharedProtocols } from './uikit-router.js'
 
 // Sinh SwiftUI MVVM-R từ cùng IR với UIKit. Router dùng UIHostingController để chạy giống nhau từ iOS 13,
@@ -122,6 +122,9 @@ function generateViperPresenter(n, texts, api) {
 function generateScreenView(names, root, api, texts, colorRegistry, arch = 'mvvm-r', viper = null) {
   const owner = arch === 'viper' ? 'presenter' : 'viewModel'
   const ctx = createContext(api, texts, colorRegistry, owner)
+  const groups = repeatedInstanceGroups(root)
+  ctx.itemGroups = new Map(groups.flatMap(group => group.nodes.map((node, index) => [node.id, { group, index }])))
+  for (const group of groups) ctx.used.add(group.name)
   const content = renderContent(root, ctx, true)
   // Màn cao hơn thiết bị → ScrollView; khung Figma cố định thì ghim chiều cao (ScrollView đề xuất chiều cao vô hạn,
   // nội dung dùng maxHeight: .infinity sẽ không có kích thước xác định).
@@ -139,7 +142,8 @@ function generateScreenView(names, root, api, texts, colorRegistry, arch = 'mvvm
   const preview = api.observation
     ? `#Preview {\n    ${construct}\n}`
     : `struct ${names.view}Previews: PreviewProvider {\n    static var previews: some View {\n        ${construct.replace(/\n/g, '\n    ')}\n    }\n}`
-  return `import SwiftUI\n\nstruct ${names.view}: View {\n${property}    var body: some View {\n${indent(body, 2).join('\n')}\n    }\n}\n${sectionsExtension(names.view, ctx)}\n${preview}\n`
+  const items = groups.flatMap(itemsProperty)
+  return `import SwiftUI\n\nstruct ${names.view}: View {\n${property}${items.length ? `${items.join('\n')}\n` : ''}    var body: some View {\n${indent(body, 2).join('\n')}\n    }\n}\n${sectionsExtension(names.view, ctx)}\n${preview}\n`
 }
 
 function generateComponentView(className, root, api, colorRegistry) {
@@ -164,7 +168,33 @@ function generateComponentView(className, root, api, colorRegistry) {
   const preview = api.observation
     ? `#Preview {\n    ${className}()\n}`
     : `struct ${className}Previews: PreviewProvider {\n    static var previews: some View {\n        ${className}()\n    }\n}`
-  return `import SwiftUI\n\nstruct ${className}: View {\n${stored}    var body: some View {\n${indent(body, 2).join('\n')}\n    }\n}\n${sectionsExtension(className, ctx)}\n${preview}\n`
+  return `import SwiftUI\n\nstruct ${className}: View {\n${stored}    var body: some View {\n${indent(body, 2).join('\n')}\n    }\n}\n${sectionsExtension(className, ctx)}${itemExtension(className, slots, root.meta?.isButton)}\n${preview}\n`
+}
+
+// Dữ liệu 1 instance (id + các slot) — màn hình giữ mảng Item và dựng component bằng ForEach thay vì N lời gọi rời.
+// init(item:) gọi lại memberwise init nên lời gọi cũ (PlanCardView(view3GBText: ...)) vẫn dùng được.
+function itemExtension(className, slots, isButton) {
+  if (!slots.length) return ''
+  const fields = slots
+    .map(slot => `        var ${slot.param} = ${slot.kind === 'text' ? swiftString(slot.fallback) : 'false'}`)
+    .flatMap(line => line.length > 120 ? ['        // swiftlint:disable:next line_length', line] : [line])
+  const args = [...slots.map(slot => `${slot.param}: item.${slot.param}`), ...(isButton ? ['action: action'] : [])]
+  const params = isButton ? 'item: Item, action: @escaping () -> Void = {}' : 'item: Item'
+  return `\nextension ${className} {\n    struct Item: Identifiable {\n        let id: Int\n${fields.join('\n')}\n    }\n\n    init(${params}) {\n        self.init(\n${args.map((arg, index) => `            ${arg}${index < args.length - 1 ? ',' : ''}`).join('\n')}\n        )\n    }\n}\n`
+}
+
+// Mảng Item của màn hình (giá trị thiết kế) — chỗ thay bằng dữ liệu thật (ViewModel/API) chỉ còn một nơi.
+function itemsProperty(group) {
+  const items = group.nodes.flatMap((node, index) => [
+    '        .init(',
+    `            id: ${index},`,
+    ...node.overrides.flatMap(({ slot, value }, argIndex) => {
+      const line = `            ${slot.param}: ${slot.kind === 'text' ? swiftString(value) : String(value)}${argIndex < node.overrides.length - 1 ? ',' : ''}`
+      return line.length > 120 ? ['            // swiftlint:disable:next line_length', line] : [line]
+    }),
+    `        )${index < group.nodes.length - 1 ? ',' : ''}`
+  ])
+  return [`    private let ${group.name}: [${group.className}.Item] = [`, ...items, '    ]', '']
 }
 
 function textProperties(texts, api) {
@@ -237,7 +267,7 @@ function renderContentLines(node, ctx, isRoot, sizeModifiers) {
     return expression(Array.isArray(base) ? base : [base], [...modifiers, ...sizeModifiers, ...styleModifiers(node, false, ctx)])
   }
   if (node.kind === 'image') return expression([`Image(${swiftString(node.outlet)})`], ['.resizable()', '.scaledToFit()', ...sizeModifiers, ...styleModifiers(node, true, ctx)])
-  if (node.kind === 'component') return expression(componentCall(node), sizeModifiers)
+  if (node.kind === 'component') return expression(componentCall(node, ctx), sizeModifiers)
   const { base, modifiers } = containerLines(node, ctx)
   return expression(base, [...modifiers, ...sizeModifiers, ...styleModifiers(node, true, ctx)])
 }
@@ -248,7 +278,9 @@ function expression(lines, modifiers) {
   return [...lines, ...(head.endsWith('{') || head.endsWith('(') ? modifiers : indent(modifiers, 1))]
 }
 
-function componentCall(node) {
+function componentCall(node, ctx) {
+  const grouped = ctx?.itemGroups?.get(node.id)
+  if (grouped) return [`${node.className}(item: ${grouped.group.name}[${grouped.index}])`]
   if (!node.overrides?.length) return [`${node.className}()`]
   const args = node.overrides.map(({ slot, value }, index) => `    ${slot.param}: ${slot.kind === 'text' ? swiftString(value) : String(value)}${index < node.overrides.length - 1 ? ',' : ''}`)
   return [`${node.className}(`, ...args, ')']
@@ -305,6 +337,19 @@ function textRunLines(node, ctx) {
   return ['(', ...parts.flatMap(line => line.length > 100 ? ['    // swiftlint:disable:next line_length', line] : [line]), ')']
 }
 
+function itemRun(arranged, start, ctx, stack) {
+  const first = ctx.itemGroups?.get(arranged[start].id)
+  if (!first || stack.distribution === 'equalSpacing') return [arranged[start]]
+  const modifiers = arrangedModifiers(arranged[start], stack).join('\n')
+  const run = [arranged[start]]
+  for (let index = start + 1; index < arranged.length; index++) {
+    const next = ctx.itemGroups.get(arranged[index].id)
+    if (next?.group !== first.group || next.index !== first.index + run.length || arrangedModifiers(arranged[index], stack).join('\n') !== modifiers) break
+    run.push(arranged[index])
+  }
+  return run
+}
+
 function containerLines(node, ctx) {
   const pinned = node.stack ? node.children.filter(child => !child.arranged) : node.children
   if (!node.stack) return { base: node.children.length ? zStackLines(pinned, ctx) : ['Color.clear'], modifiers: [] }
@@ -318,10 +363,20 @@ function stackLines(node, ctx) {
   const horizontal = stack.axis === 'horizontal'
   const arranged = node.children.filter(child => child.arranged)
   const children = []
-  arranged.forEach((child, index) => {
+  for (let index = 0; index < arranged.length; index++) {
+    const child = arranged[index]
     if (index > 0 && stack.distribution === 'equalSpacing') children.push('Spacer(minLength: 0)')
+    const run = itemRun(arranged, index, ctx, stack)
+    if (run.length > 1) {
+      // Instance liên tiếp cùng component, cùng modifier → ForEach trên đoạn mảng tương ứng.
+      const { group, index: first } = ctx.itemGroups.get(child.id)
+      const view = expression([`${child.className}(item: item)`], arrangedModifiers(child, stack))
+      children.push(`ForEach(${group.name}[${first}..<${first + run.length}]) { item in`, ...indent(view, 1), '}')
+      index += run.length - 1
+      continue
+    }
     children.push(...renderContent(child, ctx, false, arrangedModifiers(child, stack)))
-  })
+  }
   const base = [`${horizontal ? 'HStack' : 'VStack'}(alignment: ${swiftStackAlignment(stack)}, spacing: ${formatNumber(stack.spacing)}) {`, ...indent(children, 1), '}']
   const lines = []
   const insets = {
