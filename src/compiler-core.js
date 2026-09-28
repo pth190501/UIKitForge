@@ -1197,7 +1197,11 @@ function normalizeFontWeight(weight) { const n = Number(weight); return Number.i
 export function swiftFontWeight(weight) { if (weight >= 800) return 'heavy'; if (weight >= 700) return 'bold'; if (weight >= 600) return 'semibold'; if (weight >= 500) return 'medium'; if (weight <= 300) return 'light'; return 'regular' }
 export function swiftString(value) { return `"${String(value || '').replace(/\\/g, '\\\\').replace(/"/g, '\\"').replace(/\n/g, '\\n')}"` }
 function xibTextAlignment(value) { if (value === 'center') return 'center'; if (value === 'right') return 'right'; if (value === 'justified') return 'justified'; return 'natural' }
-function xmlEscape(value) { return String(value ?? '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;').replace(/'/g, '&apos;') }
+// Tên layer Figma có thể lẫn ký tự điều khiển vô hình (vd U+001D trước "Title") — XML 1.0 cấm hẳn, kể cả dạng &#x1D;,
+// nên ibtool báo "invalid character in attribute value". Bỏ chúng đi thay vì escape.
+// eslint-disable-next-line no-control-regex
+const XML_INVALID_CHARS = /[\u0000-\u0008\u000B\u000C\u000E-\u001F￾￿]/g
+function xmlEscape(value) { return String(value ?? '').replace(XML_INVALID_CHARS, '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;').replace(/'/g, '&apos;') }
 // ID băm từ Figma node id: ổn định giữa các lần export (diff XIB gọn) và không trùng hậu tố như cách cắt chuỗi cũ.
 function xibId(value) { return `UF-${hashId(value || cryptoSafeId())}` }
 function hashId(value) { let hash = 0x811c9dc5; for (const char of String(value)) { hash ^= char.codePointAt(0); hash = Math.imul(hash, 0x01000193) >>> 0 } return hash.toString(36).padStart(7, '0') }

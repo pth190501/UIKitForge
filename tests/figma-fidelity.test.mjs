@@ -2,6 +2,7 @@ import assert from 'node:assert/strict'
 import { compileUIKit } from '../src/compiler.js'
 import { isRasterCandidate } from '../src/figma.js'
 import { LINT_CONFIG_FILES } from '../src/lint-config.js'
+import { banGoiNgayScreen } from './fixtures.mjs'
 
 // Node "khó" kiểu màn 34715:42593: icon vector, nền gradient, text đậm một đoạn, bo góc có/không clip, effect lạ.
 const box = (x, y, width, height) => ({ absoluteBoundingBox: { x, y, width, height } })
@@ -86,6 +87,12 @@ const todo = compiled.files.find(file => file.path === 'TODO.md')
 assert.ok(todo, 'TODO.md must ship with the export')
 assert.match(todo.content, /- \[ \] `conic` \(Conic\): gradient angular/)
 assert.match(LINT_CONFIG_FILES.find(file => file.path === '.swiftlint.yml').content, /disabled_rules:\n {2}- todo/)
+
+// Tên layer thật ("Bán gói ngày") có ký tự điều khiển U+001D — XML 1.0 cấm, ibtool từ chối cả file XIB.
+const xibs = compileUIKit(banGoiNgayScreen, 'GeneratedView', { deploymentTarget: 13 }).files.filter(file => file.path.endsWith('.xib'))
+assert.ok(xibs.length > 1)
+// eslint-disable-next-line no-control-regex
+for (const file of xibs) assert.doesNotMatch(file.content, /[\u0000-\u0008\u000B\u000C\u000E-\u001F]/, `${file.path} has XML-invalid characters`)
 
 // Màn không có gì cần sửa tay thì không sinh TODO.md rỗng.
 const plain = compileUIKit({ root: { id: '9:1', type: 'FRAME', name: 'Plain', ...box(0, 0, 100, 100), children: [] } }, 'PlainView', { deploymentTarget: 13 })
