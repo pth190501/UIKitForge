@@ -190,6 +190,8 @@ function gradientLines(node, targetRef, hint, colorRegistry) {
     `            gradientView.gradient.endPoint = CGPoint(x: ${formatNumber(gradient.end.x)}, y: ${formatNumber(gradient.end.y)})`
   ]
   if (gradient.type === 'radial') lines.push('            gradientView.gradient.type = .radial')
+  // .conic (iOS 12+): startPoint là tâm, hướng startPoint → endPoint là góc bắt đầu — khớp 2 handle đầu của Figma.
+  if (gradient.type === 'angular') lines.push('            gradientView.gradient.type = .conic')
   if (radius > 0) lines.push(`            gradientView.layer.cornerRadius = ${formatNumber(radius)}`)
   if (radius > 0 && node.style.cornerRadii) lines.push(...maskedCornersLines('gradientView.', node.style.cornerRadii, '            '))
   lines.push(`            gradientView.install(in: ${targetRef === 'self' ? 'self' : targetRef})`, '        }')
@@ -221,8 +223,49 @@ private final class GradientLayerView: UIView {
 }
 `
 
+export function backgroundAssetName(node) {
+  return `${node.outlet}Background`
+}
+
+const IMAGE_CONTENT_MODE = { FILL: '.scaleAspectFill', FIT: '.scaleAspectFit', STRETCH: '.scaleToFill', TILE: '.scaleToFill' }
+
+// Ảnh nền (image fill của container) nằm dưới mọi view con, co giãn theo host bằng Auto Layout.
+function backgroundImageLines(node, targetRef) {
+  const { scaleMode } = node.style.backgroundImage
+  return [
+    '        do {',
+    '            let backgroundView = BackgroundImageView()',
+    `            backgroundView.image = UIImage(named: ${swiftString(backgroundAssetName(node))})`,
+    `            backgroundView.contentMode = ${IMAGE_CONTENT_MODE[scaleMode] || '.scaleAspectFill'}`,
+    `            backgroundView.install(in: ${targetRef === 'self' ? 'self' : targetRef})`,
+    '        }'
+  ]
+}
+
+// clipsToBounds trên chính ảnh nền: scaleAspectFill tràn khung sẽ bị cắt mà không phải clip cả host (con tràn góc).
+const BACKGROUND_IMAGE_HELPER = `
+private final class BackgroundImageView: UIImageView {
+    func install(in host: UIView) {
+        clipsToBounds = true
+        isAccessibilityElement = false
+        isUserInteractionEnabled = false
+        translatesAutoresizingMaskIntoConstraints = false
+        host.insertSubview(self, at: 0)
+        NSLayoutConstraint.activate([
+            leadingAnchor.constraint(equalTo: host.leadingAnchor),
+            trailingAnchor.constraint(equalTo: host.trailingAnchor),
+            topAnchor.constraint(equalTo: host.topAnchor),
+            bottomAnchor.constraint(equalTo: host.bottomAnchor)
+        ])
+    }
+}
+`
+
 function withGradientHelper(swift) {
-  return withLengthGuards(swift.includes('GradientLayerView()') ? `${swift}${GRADIENT_HELPER}` : swift)
+  let out = swift
+  if (out.includes('GradientLayerView()')) out += GRADIENT_HELPER
+  if (out.includes('BackgroundImageView(')) out += BACKGROUND_IMAGE_HELPER
+  return withLengthGuards(out)
 }
 
 // Màn hình lớn (vd "Bán gói ngày") sinh file/hàm dài vượt ngưỡng mặc định của SwiftLint (warning: hàm 50, type 250,
@@ -348,6 +391,12 @@ function buildIR(node, parentNode, componentMap, options = {}) {
     children: []
   }
 
+  // Container có image fill + con: ảnh gốc (imageRef) thành asset nền riêng, con vẫn giữ nguyên phía trên.
+  if (ir.meta.preservesChildrenOverImageFill && !rasterized) {
+    const paint = (node.fills || []).find(item => item?.visible !== false && item?.type === 'IMAGE' && item.imageRef)
+    if (paint) ir.style.backgroundImage = { imageRef: paint.imageRef, scaleMode: paint.scaleMode || 'FILL' }
+  }
+
   if (!reusable) {
     ir.children = renderableChildren.map(child => buildIR(child, node, componentMap, options))
     layoutChildren(node, ir, renderableChildren)
@@ -367,18 +416,13 @@ export function todosOf(node, parentNode = null, rasterized = false) {
   const visible = item => item && item.visible !== false
   const fills = (node.fills || []).filter(visible)
   for (const paint of fills) {
-    if (paint.type === 'GRADIENT_ANGULAR' || paint.type === 'GRADIENT_DIAMOND') {
-      todos.push(`gradient ${paint.type === 'GRADIENT_ANGULAR' ? 'angular (conic)' : 'diamond'} chưa hỗ trợ; export nền thành ảnh hoặc vẽ tay.`)
-    }
+    if (paint.type === 'GRADIENT_DIAMOND') todos.push('gradient diamond chưa hỗ trợ; export nền thành ảnh hoặc vẽ tay.')
   }
   if (!rasterized && node.type !== 'TEXT') {
-    const gradient = fills.find(paint => paint.type === 'GRADIENT_LINEAR' || paint.type === 'GRADIENT_RADIAL')
+    const gradient = fills.find(paint => GRADIENT_TYPES[paint.type])
     if (gradient && fills.some(paint => paint.type === 'SOLID')) todos.push('nhiều lớp fill (solid + gradient); code chỉ giữ lớp solid.')
     else if (gradient?.type === 'GRADIENT_RADIAL') todos.push('radial gradient Figma là elip; SwiftUI/CAGradientLayer vẽ tròn — so lại với thiết kế.')
     else if (gradient && !gradient.gradientHandlePositions) todos.push('gradient thiếu handle; đang giả định hướng trên → dưới.')
-  }
-  if (!rasterized && fills.filter(paint => paint.type === 'IMAGE').length && (node.children || []).some(visible)) {
-    todos.push('container có image fill làm nền; thêm UIImageView nền (asset chưa được export).')
   }
   const effects = (node.effects || []).filter(visible)
   const unsupported = [...new Set(effects.filter(item => item.type !== 'DROP_SHADOW').map(item => item.type.toLowerCase().replace(/_/g, ' ')))]
@@ -575,15 +619,18 @@ function extractStyle(node) {
 
 // Figma gradientHandlePositions nằm trong hệ toạ độ đơn vị của node (0..1, y hướng xuống) — trùng với
 // startPoint/endPoint của CAGradientLayer và UnitPoint của SwiftUI. Không có handle thì mặc định trên → dưới.
+const GRADIENT_TYPES = { GRADIENT_LINEAR: 'linear', GRADIENT_RADIAL: 'radial', GRADIENT_ANGULAR: 'angular' }
+
 function gradientOf(node) {
-  const paint = (node.fills || []).find(item => item?.visible !== false && (item?.type === 'GRADIENT_LINEAR' || item?.type === 'GRADIENT_RADIAL'))
+  const paint = (node.fills || []).find(item => item?.visible !== false && GRADIENT_TYPES[item?.type])
   if (!paint?.gradientStops?.length) return null
-  const radial = paint.type === 'GRADIENT_RADIAL'
+  // Angular: handle 0 là tâm, handle 1 cho hướng bắt đầu — giống radial về vị trí mặc định.
+  const radial = paint.type !== 'GRADIENT_LINEAR'
   const [h0, h1] = paint.gradientHandlePositions || []
   const point = (handle, fallback) => handle ? { x: round(handle.x), y: round(handle.y) } : fallback
   const opacity = paint.opacity == null ? 1 : paint.opacity
   return {
-    type: radial ? 'radial' : 'linear',
+    type: GRADIENT_TYPES[paint.type],
     stops: paint.gradientStops.map(stop => ({
       position: round(stop.position),
       rgba: paintColorToRgba({ ...stop.color, a: (stop.color?.a ?? 1) * opacity })
@@ -781,6 +828,7 @@ function generateSwiftStyleLines(root, { includeStatic = false, rootRef = 'conte
       if (style.clipsContent || node.kind === 'image') lines.push(`        ${target}layer.masksToBounds = true`)
     }
     if (includeStatic && style.gradient && node.kind !== 'image') lines.push(...gradientLines(node, targetRef, hint, colorRegistry))
+    if (includeStatic && style.backgroundImage) lines.push(...backgroundImageLines(node, targetRef))
     if (style.borderColor && style.borderWidth > 0) {
       lines.push(`        ${target}layer.borderColor = ${cgColor(namedColor(colorRegistry, style.borderColor, `${hint}Border`))}`)
       lines.push(`        ${target}layer.borderWidth = ${formatNumber(style.borderWidth)}`)
@@ -1170,7 +1218,7 @@ function collectLayoutWarnings(root) {
     if (node !== root && !node.arranged && !hasTwoAxisConstraints(node.constraints || [])) warnings.push(`${node.name}: UIKitForge could not infer a complete two-axis Auto Layout rule.`)
     if (node.meta?.wraps) warnings.push(`${node.name}: Figma wrap Auto Layout has no UIStackView equivalent; children were laid out in a single line.`)
     if (node.meta?.rasterized) warnings.push(`${node.name}: vector/rotated artwork is exported from Figma as the image asset "${node.outlet}" (@2x/@3x) — not editable as vector in code.`)
-    if (node.meta?.preservesChildrenOverImageFill) warnings.push(`${node.name}: Figma uses an image fill on a container. UIKitForge preserved its child hierarchy instead of collapsing the container into UIImageView; the background image asset is not exported yet.`)
+    if (node.meta?.preservesChildrenOverImageFill) warnings.push(`${node.name}: Figma uses an image fill on a container. UIKitForge preserved its child hierarchy and exports the fill as the background image asset "${backgroundAssetName(node)}".`)
     // HIG: vùng chạm tối thiểu 44x44pt. Component instance (INSTANCE trong Figma) thường là nút/control
     // tương tác, nên đây là proxy hợp lý dù compiler chưa model được khái niệm "tappable" tường minh.
     if (node.kind === 'component' && (node.frame?.width < 44 || node.frame?.height < 44)) {

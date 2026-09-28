@@ -529,7 +529,7 @@ async function downloadAllFiles() {
   const zip = new JSZip()
   for (const file of visibleFiles()) zip.file(file.path, file.content)
   for (const asset of state.compiled.assets || []) addImageAsset(zip, asset)
-  await addFigmaImageAssets(zip, state.compiled.imageAssetRefs || [], state.figmaData?.nodeImageExports)
+  await addFigmaImageAssets(zip, state.compiled.imageAssetRefs || [], state.figmaData?.nodeImageExports, state.figmaData?.imageMap)
   addColorAssets(zip, state.compiled.colors || [])
   if (state.referenceImage) zip.file('References/source-screenshot.png', dataUrlPayload(state.referenceImage), { base64: true })
   zip.file('UIKitForge.generated.json', JSON.stringify({ rootClass: state.compiled.rootClass, components: state.compiled.components, warnings: state.compiled.warnings, source: state.figmaData?.source || null, assets: (state.compiled.assets || []).map(({ dataUrl, ...meta }) => meta) }, null, 2))
@@ -637,6 +637,8 @@ function collectImageAssetRefs(compiled) {
   const walk = node => {
     if (!node) return
     if (node.kind === 'image' && node.figmaId) refs.push({ outlet: node.outlet, figmaId: node.figmaId })
+    // Ảnh nền của container (image fill + con): tải ảnh gốc theo imageRef, không render node (sẽ dính cả con vào ảnh).
+    if (node.style?.backgroundImage?.imageRef) refs.push({ outlet: `${node.outlet}Background`, imageRef: node.style.backgroundImage.imageRef })
     for (const child of node.children || []) walk(child)
   }
   walk(compiled.previewRoot)
@@ -646,11 +648,16 @@ function collectImageAssetRefs(compiled) {
 
 // Tải PNG @2x/@3x đã export từ Figma (nodeImageExports, xem figma.js) và đóng gói vào
 // Assets.xcassets/<outlet>.imageset — chỉ lúc tải zip, không tải trước lúc compile.
-async function addFigmaImageAssets(zip, refs, nodeImageExports) {
-  if (!nodeImageExports) return
+async function addFigmaImageAssets(zip, refs, nodeImageExports, imageMap = {}) {
   const seen = new Set()
-  for (const { outlet, figmaId } of refs) {
+  for (const { outlet, figmaId, imageRef } of refs) {
     if (!outlet || seen.has(outlet)) continue
+    if (imageRef) {
+      seen.add(outlet)
+      await addOriginalImageAsset(zip, outlet, imageMap[imageRef])
+      continue
+    }
+    if (!nodeImageExports) continue
     const urls = nodeImageExports[figmaId]
     if (!urls || (!urls['2x'] && !urls['3x'])) continue
     seen.add(outlet)
@@ -668,6 +675,18 @@ async function addFigmaImageAssets(zip, refs, nodeImageExports) {
     }
     if (images.length) zip.file(`${folder}/Contents.json`, JSON.stringify({ images, info: { author: 'UIKitForge', version: 1 } }, null, 2))
   }
+}
+
+// Ảnh gốc của image fill chỉ có một độ phân giải → imageset single-scale; đuôi file theo MIME (Figma giữ JPEG/PNG gốc).
+async function addOriginalImageAsset(zip, outlet, url) {
+  if (!url) return
+  try {
+    const blob = await fetch(url).then(response => response.blob())
+    const filename = `${outlet}.${blob.type === 'image/jpeg' ? 'jpg' : 'png'}`
+    const folder = `Assets.xcassets/${outlet}.imageset`
+    zip.file(`${folder}/${filename}`, blob)
+    zip.file(`${folder}/Contents.json`, JSON.stringify({ images: [{ idiom: 'universal', filename }], info: { author: 'UIKitForge', version: 1 } }, null, 2))
+  } catch { /* URL ảnh hết hạn/mạng lỗi: bỏ qua asset này, code vẫn build (UIImage(named:) trả nil) */ }
 }
 
 function downloadSelectedFile() { const file = currentFile(); if (!file) return; downloadBlob(new Blob([file.content], { type: 'text/plain;charset=utf-8' }), file.name) }

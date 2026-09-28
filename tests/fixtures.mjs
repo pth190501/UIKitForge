@@ -76,3 +76,49 @@ const banNode = JSON.parse(readFileSync(new URL('./fixtures/ban-goi-ngay.json', 
   }
 }
 export const banGoiNgayScreen = { root: banNode }
+
+// Node "khó" (kiểu màn 34715:42593): vector, gradient linear/radial/angular, clip, bo góc từng góc, chữ nhiều kiểu.
+// Nằm trong fixtures (không chỉ trong test) để CI macOS typecheck/lint code Swift sinh ra từ chúng.
+const stop = (position, r, g, b) => ({ position, color: { r, g, b, a: 1 } })
+const solid = (r, g, b) => [{ type: 'SOLID', color: { r, g, b, a: 1 } }]
+export const fidelityScreen = {
+  root: {
+    id: '1:1', type: 'FRAME', name: 'Promo', ...box(0, 0, 390, 560),
+    children: [
+      { id: '1:2', type: 'VECTOR', name: 'Star Icon', fills: [{ type: 'SOLID', color: { r: 1, g: 0.8, b: 0, a: 1 } }], ...box(16, 16, 24, 24) },
+      { id: '1:3', type: 'FRAME', name: 'Hero', cornerRadius: 12, clipsContent: false, ...box(16, 56, 358, 80),
+        fills: [{ type: 'GRADIENT_LINEAR', gradientHandlePositions: [{ x: 0, y: 0.5 }, { x: 1, y: 0.5 }, { x: 0, y: 1 }], gradientStops: [stop(0, 1, 0, 0), stop(1, 0, 0, 1)] }] },
+      { id: '1:4', type: 'FRAME', name: 'Glow', ...box(16, 150, 100, 100),
+        fills: [{ type: 'GRADIENT_RADIAL', gradientHandlePositions: [{ x: 0.5, y: 0.5 }, { x: 1, y: 0.5 }, { x: 0.5, y: 1 }], gradientStops: [stop(0, 1, 1, 1), stop(1, 0, 0, 0)] }] },
+      { id: '1:5', type: 'FRAME', name: 'Clipped Card', cornerRadius: 8, clipsContent: true, fills: [{ type: 'SOLID', color: { r: 1, g: 1, b: 1, a: 1 } }], ...box(130, 150, 100, 100) },
+      { id: '1:6', type: 'FRAME', name: 'Conic', fills: [{ type: 'GRADIENT_ANGULAR', gradientStops: [stop(0, 1, 0, 0), stop(1, 0, 1, 0)] }],
+        effects: [{ type: 'INNER_SHADOW', radius: 4, color: { r: 0, g: 0, b: 0, a: 0.2 }, offset: { x: 0, y: 1 } }], ...box(250, 150, 100, 100) },
+      { id: '1:7', type: 'TEXT', name: 'Promo Text', characters: 'Gói 5G giá tốt', ...box(16, 270, 358, 20),
+        style: { fontFamily: 'SF Pro', fontSize: 14, fontWeight: 400, textAutoResize: 'HEIGHT' },
+        characterStyleOverrides: [0, 0, 0, 0, 1, 1], styleOverrideTable: { 1: { fontWeight: 700 } } },
+      { id: '1:9', type: 'FRAME', name: 'Hot Tag', rectangleCornerRadii: [4, 4, 0, 4], fills: [{ type: 'SOLID', color: { r: 1, g: 0, b: 0, a: 1 } }], ...box(16, 330, 40, 20) },
+      { id: '1:10', type: 'FRAME', name: 'Sheet', rectangleCornerRadii: [16, 8, 0, 0], clipsContent: true, fills: [{ type: 'SOLID', color: { r: 1, g: 1, b: 1, a: 1 } }], ...box(70, 330, 100, 60) },
+      { id: '1:11', type: 'FRAME', name: 'Banner', cornerRadius: 12, fills: [{ type: 'IMAGE', imageRef: 'img-banner', scaleMode: 'FILL' }], ...box(16, 400, 358, 120),
+        children: [{ id: '1:12', type: 'TEXT', name: 'Banner Title', characters: 'Data không giới hạn', fills: solid(1, 1, 1), style: { fontSize: 18, fontWeight: 700 }, ...box(32, 416, 200, 24) }] },
+      { id: '1:13', type: 'FRAME', name: 'Ring', ...box(250, 400, 80, 40),
+        fills: [{ type: 'GRADIENT_ANGULAR', gradientHandlePositions: [{ x: 0.5, y: 0.5 }, { x: 0.5, y: 0 }, { x: 1, y: 0.5 }], gradientStops: [stop(0, 1, 0, 0), stop(1, 0, 0, 1)] }] },
+      { id: '1:8', type: 'TEXT', name: 'Brand', characters: 'Viettel', ...box(16, 300, 100, 20), style: { fontFamily: 'Viettel Sans', fontSize: 14, fontWeight: 400 } }
+    ]
+  }
+}
+
+export const textStylingScreen = {
+  root: {
+    id: '1:1', type: 'FRAME', name: 'Promo', ...box(0, 0, 390, 400),
+    children: [
+      { id: '1:2', type: 'TEXT', name: 'Headline', characters: 'ưu đãi hôm nay', fills: solid(0, 0, 0), ...box(16, 16, 358, 44),
+        style: { fontFamily: 'SF Pro', fontSize: 16, fontWeight: 600, lineHeightPx: 22, lineHeightUnit: 'PIXELS', letterSpacing: 0.5, textCase: 'UPPER', textAutoResize: 'HEIGHT', textAlignHorizontal: 'CENTER' } },
+      { id: '1:3', type: 'TEXT', name: 'Terms', characters: 'Xem điều khoản', fills: solid(0, 0, 0), ...box(16, 70, 358, 20),
+        style: { fontFamily: 'SF Pro', fontSize: 14, fontWeight: 400, lineHeightPx: 17, lineHeightUnit: 'INTRINSIC_%', textAutoResize: 'HEIGHT' },
+        characterStyleOverrides: [0, 0, 0, 0, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1],
+        styleOverrideTable: { 1: { fills: solid(0, 0.4, 1), textDecoration: 'UNDERLINE' } } },
+      { id: '1:4', type: 'TEXT', name: 'Old Price', characters: '50.000đ', fills: solid(0.5, 0.5, 0.5), ...box(16, 100, 80, 20),
+        style: { fontFamily: 'SF Pro', fontSize: 14, fontWeight: 400, textDecoration: 'STRIKETHROUGH' } }
+    ]
+  }
+}

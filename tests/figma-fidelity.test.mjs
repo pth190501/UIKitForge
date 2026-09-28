@@ -2,32 +2,10 @@ import assert from 'node:assert/strict'
 import { compileUIKit } from '../src/compiler.js'
 import { isRasterCandidate } from '../src/figma.js'
 import { LINT_CONFIG_FILES } from '../src/lint-config.js'
-import { banGoiNgayScreen, layoutScreen } from './fixtures.mjs'
+import { banGoiNgayScreen, fidelityScreen as screen, layoutScreen } from './fixtures.mjs'
 
-// Node "khó" kiểu màn 34715:42593: icon vector, nền gradient, text đậm một đoạn, bo góc có/không clip, effect lạ.
+// Node "khó" kiểu màn 34715:42593 (fidelityScreen trong fixtures.mjs): vector, gradient, text nhiều kiểu, bo góc, effect lạ.
 const box = (x, y, width, height) => ({ absoluteBoundingBox: { x, y, width, height } })
-const stop = (position, r, g, b) => ({ position, color: { r, g, b, a: 1 } })
-const screen = {
-  root: {
-    id: '1:1', type: 'FRAME', name: 'Promo', ...box(0, 0, 390, 400),
-    children: [
-      { id: '1:2', type: 'VECTOR', name: 'Star Icon', fills: [{ type: 'SOLID', color: { r: 1, g: 0.8, b: 0, a: 1 } }], ...box(16, 16, 24, 24) },
-      { id: '1:3', type: 'FRAME', name: 'Hero', cornerRadius: 12, clipsContent: false, ...box(16, 56, 358, 80),
-        fills: [{ type: 'GRADIENT_LINEAR', gradientHandlePositions: [{ x: 0, y: 0.5 }, { x: 1, y: 0.5 }, { x: 0, y: 1 }], gradientStops: [stop(0, 1, 0, 0), stop(1, 0, 0, 1)] }] },
-      { id: '1:4', type: 'FRAME', name: 'Glow', ...box(16, 150, 100, 100),
-        fills: [{ type: 'GRADIENT_RADIAL', gradientHandlePositions: [{ x: 0.5, y: 0.5 }, { x: 1, y: 0.5 }, { x: 0.5, y: 1 }], gradientStops: [stop(0, 1, 1, 1), stop(1, 0, 0, 0)] }] },
-      { id: '1:5', type: 'FRAME', name: 'Clipped Card', cornerRadius: 8, clipsContent: true, fills: [{ type: 'SOLID', color: { r: 1, g: 1, b: 1, a: 1 } }], ...box(130, 150, 100, 100) },
-      { id: '1:6', type: 'FRAME', name: 'Conic', fills: [{ type: 'GRADIENT_ANGULAR', gradientStops: [stop(0, 1, 0, 0), stop(1, 0, 1, 0)] }],
-        effects: [{ type: 'INNER_SHADOW', radius: 4, color: { r: 0, g: 0, b: 0, a: 0.2 }, offset: { x: 0, y: 1 } }], ...box(250, 150, 100, 100) },
-      { id: '1:7', type: 'TEXT', name: 'Promo Text', characters: 'Gói 5G giá tốt', ...box(16, 270, 358, 20),
-        style: { fontFamily: 'SF Pro', fontSize: 14, fontWeight: 400, textAutoResize: 'HEIGHT' },
-        characterStyleOverrides: [0, 0, 0, 0, 1, 1], styleOverrideTable: { 1: { fontWeight: 700 } } },
-      { id: '1:9', type: 'FRAME', name: 'Hot Tag', rectangleCornerRadii: [4, 4, 0, 4], fills: [{ type: 'SOLID', color: { r: 1, g: 0, b: 0, a: 1 } }], ...box(16, 330, 40, 20) },
-      { id: '1:10', type: 'FRAME', name: 'Sheet', rectangleCornerRadii: [16, 8, 0, 0], clipsContent: true, fills: [{ type: 'SOLID', color: { r: 1, g: 1, b: 1, a: 1 } }], ...box(70, 330, 100, 60) },
-      { id: '1:8', type: 'TEXT', name: 'Brand', characters: 'Viettel', ...box(16, 300, 100, 20), style: { fontFamily: 'Viettel Sans', fontSize: 14, fontWeight: 400 } }
-    ]
-  }
-}
 
 const compiled = compileUIKit(screen, 'PromoView', { deploymentTarget: 13 })
 const code = compiled.files.find(file => file.path === 'UIKit-Code/PromoView/PromoView.swift').content
@@ -78,7 +56,7 @@ for (const source of [code, swiftUI]) {
 // K3: chỗ xấp xỉ/chưa hỗ trợ có "// TODO:" ngay tại code + TODO.md; SwiftLint không bắt rule `todo`.
 for (const source of [code, swiftUI]) {
   assert.match(source, /\/\/ TODO: \[glow\] radial gradient/)
-  assert.match(source, /\/\/ TODO: \[conic\] gradient angular/)
+  assert.doesNotMatch(source, /TODO: \[conic\] gradient angular/, 'angular gradient giờ sinh native')
   assert.match(source, /\/\/ TODO: \[conic\] effect inner shadow/)
   assert.match(source, /\/\/ TODO: \[brand\] font "Viettel Sans"/)
   assert.doesNotMatch(source, /TODO: \[hero\]/, 'gradient đủ handle thì không cần TODO')
@@ -86,7 +64,10 @@ for (const source of [code, swiftUI]) {
 }
 const todo = compiled.files.find(file => file.path === 'TODO.md')
 assert.ok(todo, 'TODO.md must ship with the export')
-assert.match(todo.content, /- \[ \] `conic` \(Conic\): gradient angular/)
+assert.match(todo.content, /- \[ \] `conic` \(Conic\): effect inner shadow/)
+// P3: angular gradient native — .conic (UIKit) và AngularGradient (SwiftUI).
+assert.match(code, /gradientView\.gradient\.type = \.conic/)
+assert.match(swiftUI, /AngularGradient\(\n[\s\S]*?startAngle: \.degrees\(/)
 assert.match(LINT_CONFIG_FILES.find(file => file.path === '.swiftlint.yml').content, /disabled_rules:\n {2}- todo/)
 
 // Tên layer thật ("Bán gói ngày") có ký tự điều khiển U+001D — XML 1.0 cấm, ibtool từ chối cả file XIB.
@@ -112,6 +93,16 @@ const banXib = ban.files.find(file => file.path === 'GeneratedView/GeneratedView
 assert.match(banXib, /\/\/\/ [^\n]*\n\s+private func applyGeneratedStyle\(\) \{ \/\/ swiftlint:disable:this function_body_length/)
 const small = compileUIKit(layoutScreen, 'GeneratedView', { deploymentTarget: 17 }).files.filter(file => file.language === 'swift')
 for (const file of small) assert.doesNotMatch(file.content, /swiftlint:disable(:next)? (file_length|type_body_length|function_body_length)/, file.path)
+
+// P3: image fill trên container có con → asset nền riêng (ảnh gốc theo imageRef), con giữ nguyên phía trên.
+assert.deepEqual(node('banner').style.backgroundImage, { imageRef: 'img-banner', scaleMode: 'FILL' })
+assert.match(code, /let backgroundView = BackgroundImageView\(\)\n\s+backgroundView\.image = UIImage\(named: "bannerBackground"\)\n\s+backgroundView\.contentMode = \.scaleAspectFill\n\s+backgroundView\.install\(in: banner\)/)
+assert.match(code, /private final class BackgroundImageView: UIImageView/)
+assert.match(swiftUI, /Image\(decorative: "bannerBackground"\)\n\s+\.resizable\(\)\n\s+\.scaledToFill\(\)\n\s+\)\n\s+\.clipped\(\)/)
+assert.doesNotMatch(code + swiftUI, /TODO: \[banner\]/)
+assert.ok(compiled.warnings.some(item => item.includes('"bannerBackground"')))
+// Angular có handle: hướng bắt đầu lên trên (12 giờ) = -90° trong SwiftUI.
+assert.match(swiftUI, /startAngle: \.degrees\(-90\),\n\s+endAngle: \.degrees\(270\)/)
 
 // Màn không có gì cần sửa tay thì không sinh TODO.md rỗng.
 const plain = compileUIKit({ root: { id: '9:1', type: 'FRAME', name: 'Plain', ...box(0, 0, 100, 100), children: [] } }, 'PlainView', { deploymentTarget: 13 })

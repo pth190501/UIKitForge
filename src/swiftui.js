@@ -367,6 +367,13 @@ function styleModifiers(node, includeShape, ctx) {
   // góc (nhãn "Hot") không bị cắt — .clipShape sẽ cắt luôn cả overlay.
   const clips = style.clipsContent || node.kind === 'image'
   const shape = shapeExpression(style)
+  // Ảnh nền đặt trước màu nền (background sau nằm dưới). Color.clear nhận đúng khung view, ảnh scaledToFill tràn ra
+  // được .clipped() cắt theo khung đó — không clip cả view (con tràn góc vẫn hiện).
+  if (style.backgroundImage) {
+    const mode = style.backgroundImage.scaleMode === 'FIT' ? '.scaledToFit()' : style.backgroundImage.scaleMode === 'FILL' || !style.backgroundImage.scaleMode ? '.scaledToFill()' : ''
+    lines.push('.background(', '    Color.clear', '        .overlay(', `            Image(decorative: ${swiftString(`${node.outlet}Background`)})`, '                .resizable()',
+      ...(mode ? [`                ${mode}`] : []), '        )', '        .clipped()', ')')
+  }
   if (fill && includeShape && style.radius > 0 && !clips) {
     lines.push('.background(', `    ${shape}`, '        .fill(', ...indent(fill, 3), '        )', ')')
   } else if (fill) {
@@ -403,6 +410,13 @@ function gradientLines(node, ctx, hint) {
   if (gradient.type === 'radial') {
     const radius = Math.hypot((gradient.end.x - gradient.start.x) * node.frame.width, (gradient.end.y - gradient.start.y) * node.frame.height)
     return ['RadialGradient(', '    gradient: Gradient(stops: [', ...stops, '    ]),', `    center: ${point(gradient.start)},`, '    startRadius: 0,', `    endRadius: ${formatNumber(Math.round(radius * 100) / 100)}`, ')']
+  }
+  if (gradient.type === 'angular') {
+    // Góc SwiftUI: 0° hướng sang phải, tăng theo chiều kim đồng hồ (y hướng xuống) — tính theo khung thật vì handle
+    // Figma ở toạ độ đơn vị (khung chữ nhật làm méo góc).
+    const angle = Math.atan2((gradient.end.y - gradient.start.y) * node.frame.height, (gradient.end.x - gradient.start.x) * node.frame.width) * 180 / Math.PI
+    const start = Math.round(angle * 100) / 100
+    return ['AngularGradient(', '    gradient: Gradient(stops: [', ...stops, '    ]),', `    center: ${point(gradient.start)},`, `    startAngle: .degrees(${formatNumber(start)}),`, `    endAngle: .degrees(${formatNumber(start + 360)})`, ')']
   }
   return ['LinearGradient(', '    gradient: Gradient(stops: [', ...stops, '    ]),', `    startPoint: ${point(gradient.start)},`, `    endPoint: ${point(gradient.end)}`, ')']
 }

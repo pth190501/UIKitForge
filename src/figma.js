@@ -277,7 +277,13 @@ export function figmaPaintToCss(paint) {
       return `radial-gradient(circle, ${stops})`
     }
 
-    if (paint.type === 'GRADIENT_ANGULAR') return `conic-gradient(from 0deg, ${stops})`
+    if (paint.type === 'GRADIENT_ANGULAR') {
+      // CSS conic: 0deg ở hướng 12 giờ; handle Figma (tâm → hướng bắt đầu) đo từ hướng 3 giờ → cộng 90°.
+      const [center, direction] = paint.gradientHandlePositions || []
+      if (!center || !direction) return `conic-gradient(from 0deg, ${stops})`
+      const from = Math.atan2(direction.y - center.y, direction.x - center.x) * 180 / Math.PI + 90
+      return `conic-gradient(from ${Number(from.toFixed(2))}deg at ${Number((center.x * 100).toFixed(2))}% ${Number((center.y * 100).toFixed(2))}%, ${stops})`
+    }
 
     const handles = paint.gradientHandlePositions || []
     const start = handles[0]

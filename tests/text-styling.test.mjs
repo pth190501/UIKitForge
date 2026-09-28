@@ -1,24 +1,8 @@
 import assert from 'node:assert/strict'
 import { compileUIKit } from '../src/compiler.js'
+import { textStylingScreen as screen } from './fixtures.mjs'
 
 // P1: line height, letter spacing, textCase, gạch chân/ngang và màu theo từng đoạn chữ.
-const box = (x, y, width, height) => ({ absoluteBoundingBox: { x, y, width, height } })
-const solid = (r, g, b) => [{ type: 'SOLID', color: { r, g, b, a: 1 } }]
-const screen = {
-  root: {
-    id: '1:1', type: 'FRAME', name: 'Promo', ...box(0, 0, 390, 400),
-    children: [
-      { id: '1:2', type: 'TEXT', name: 'Headline', characters: 'ưu đãi hôm nay', fills: solid(0, 0, 0), ...box(16, 16, 358, 44),
-        style: { fontFamily: 'SF Pro', fontSize: 16, fontWeight: 600, lineHeightPx: 22, lineHeightUnit: 'PIXELS', letterSpacing: 0.5, textCase: 'UPPER', textAutoResize: 'HEIGHT', textAlignHorizontal: 'CENTER' } },
-      { id: '1:3', type: 'TEXT', name: 'Terms', characters: 'Xem điều khoản', fills: solid(0, 0, 0), ...box(16, 70, 358, 20),
-        style: { fontFamily: 'SF Pro', fontSize: 14, fontWeight: 400, lineHeightPx: 17, lineHeightUnit: 'INTRINSIC_%', textAutoResize: 'HEIGHT' },
-        characterStyleOverrides: [0, 0, 0, 0, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1],
-        styleOverrideTable: { 1: { fills: solid(0, 0.4, 1), textDecoration: 'UNDERLINE' } } },
-      { id: '1:4', type: 'TEXT', name: 'Old Price', characters: '50.000đ', fills: solid(0.5, 0.5, 0.5), ...box(16, 100, 80, 20),
-        style: { fontFamily: 'SF Pro', fontSize: 14, fontWeight: 400, textDecoration: 'STRIKETHROUGH' } }
-    ]
-  }
-}
 
 const compiled = compileUIKit(screen, 'PromoView', { deploymentTarget: 13 })
 const code = compiled.files.find(file => file.path === 'UIKit-Code/PromoView/PromoView.swift').content
