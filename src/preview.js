@@ -236,7 +236,8 @@ function applyNodeStyle(element, node) {
 
   if (style.radius) element.style.borderRadius = `${style.radius}px`
   if (style.borderColor && style.borderWidth) element.style.border = `${style.borderWidth}px solid ${style.borderColor}`
-  if (style.clipsContent || style.radius) element.style.overflow = 'hidden'
+  // Bo góc không đồng nghĩa với clip (UIKit/Figma đều vậy) — chỉ cắt khi clipsContent, còn ảnh thì cần bo theo góc.
+  if (style.clipsContent || (style.radius && node.kind === 'image')) element.style.overflow = 'hidden'
 
   if (style.shadow) {
     const shadow = style.shadow

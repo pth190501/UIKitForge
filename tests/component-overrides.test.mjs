@@ -60,6 +60,6 @@ assert.deepEqual(shown, [
 ])
 
 // Component không có khác biệt giữa instance → không sinh Content/configure thừa.
-assert.doesNotMatch(compiled.files.find(file => file.path.endsWith('Components/WalletView/WalletView.swift')).content, /func configure/)
+assert.doesNotMatch(compiled.files.find(file => file.path.endsWith('Components/ButtonsButtonView/ButtonsButtonView.swift')).content, /func configure/)
 
 console.log('✓ component instance overrides (text + visibility) for UIKit, SwiftUI and preview passed')

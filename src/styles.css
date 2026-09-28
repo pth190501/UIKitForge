@@ -264,7 +264,7 @@ input[type="file"] { width: 100%; height: 42px; border: 1px dashed #33405a; bord
 .uikit-node.is-selected::before { content: attr(data-node-name); position: absolute; left: 0; top: -16px; z-index: 90; max-width: 160px; padding: 3px 5px; border-radius: 4px; background: #5268ff; color: white; font: 600 9.5px/1 -apple-system, sans-serif; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; pointer-events: none; }
 .outlines-enabled .uikit-node { outline: 1px solid rgba(101, 129, 255, .23); }
 .outlines-enabled .uikit-node:hover { outline-color: rgba(101,129,255,.72); }
-.component-boundary::after { content: attr(data-component); position: absolute; right: 4px; top: 4px; padding: 2px 4px; border-radius: 4px; background: rgba(74,91,191,.76); color: white; font: 600 8.5px/1.2 -apple-system, sans-serif; pointer-events: none; opacity: .82; }
+.outlines-enabled .component-boundary::after { content: attr(data-component); position: absolute; right: 4px; top: 4px; padding: 2px 4px; border-radius: 4px; background: rgba(74,91,191,.76); color: white; font: 600 8.5px/1.2 -apple-system, sans-serif; pointer-events: none; opacity: .82; }
 .reference-overlay { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: fill; pointer-events: none; z-index: 100; }
 
 .inspector-panel { overflow: hidden; display: flex; flex-direction: column; }

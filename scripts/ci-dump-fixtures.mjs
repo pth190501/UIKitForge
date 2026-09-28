@@ -3,6 +3,7 @@ import { mkdirSync, rmSync, writeFileSync } from 'node:fs'
 import { dirname, join } from 'node:path'
 import { compileUIKit } from '../src/compiler.js'
 import { ARCHITECTURES } from '../src/uikit-router.js'
+import { LINT_CONFIG_FILES } from '../src/lint-config.js'
 import { banGoiNgayScreen, cardScreen, feedSlotScreen, layoutScreen } from '../tests/fixtures.mjs'
 
 const OUT_DIR = 'ci-artifacts'
@@ -35,5 +36,8 @@ for (const [fixtureName, data] of Object.entries(FIXTURES)) {
   }
   }
 }
+
+// Lint bằng đúng .swiftlint.yml đi kèm export (tắt `todo`...) — CI phản ánh đúng trải nghiệm trong dự án đích.
+for (const file of LINT_CONFIG_FILES) write(join(OUT_DIR, file.path), file.content)
 
 console.log(`Dumped fixtures to ${OUT_DIR}/`)

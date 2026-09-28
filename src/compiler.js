@@ -1,5 +1,5 @@
-import { compileUIKit as compileCore, sanitizeOutletName } from './compiler-core.js'
-import { figmaPaintToCss, firstVisiblePaint } from './figma.js'
+import { collectTodoItems, compileUIKit as compileCore, sanitizeOutletName, todoMarkdown } from './compiler-core.js'
+import { figmaPaintToCss, firstVisiblePaint, isRasterCandidate } from './figma.js'
 import { applySwiftPreview } from './preview.js'
 import { generateSwiftUIFiles } from './swiftui.js'
 import { generateUIKitMVVMFiles, normalizeArchitecture } from './uikit-router.js'
@@ -14,6 +14,13 @@ export function compileUIKit(figmaData, requestedRootClass = '', options = {}) {
   result.colors = result.colorRegistry.entries()
   result.namedColors = Object.fromEntries(result.colors.map(({ name, rgba }) => [name, rgba]))
   result.files.push(...generateUIKitMVVMFiles({ rootClass: result.rootClass, architecture: result.architecture }), ...LINT_CONFIG_FILES)
+  // Lấy TODO từ IR trước khi hydrate preview (hydrate thay style bằng dữ liệu CSS, không mang theo todos).
+  result.todos = [
+    { title: result.rootClass, items: collectTodoItems(result.previewRoot) },
+    ...(result.componentIRs || []).map(({ className, ir }) => ({ title: className, items: collectTodoItems(ir) }))
+  ].filter(section => section.items.length)
+  const todoDoc = todoMarkdown(result.todos)
+  if (todoDoc) result.files.push({ path: 'TODO.md', name: 'TODO.md', language: 'markdown', content: todoDoc, kind: 'config' })
   const rawNodes = new Map()
   walkRaw(figmaData.root, node => rawNodes.set(node.id, node))
   const imageMap = figmaData.imageMap || {}
@@ -23,7 +30,7 @@ export function compileUIKit(figmaData, requestedRootClass = '', options = {}) {
 
   result.componentPreviews = Object.fromEntries(
     (result.components || []).map(component => {
-      const raw = findFirstInstance(figmaData.root, component.componentId)
+      const raw = rawNodes.get(component.sourceId) || findFirstInstance(figmaData.root, component.componentId)
       if (!raw) return [component.className, null]
       const preview = rawToPreview(raw, null, imageMap)
       dedupeOutlets(preview)
@@ -31,9 +38,22 @@ export function compileUIKit(figmaData, requestedRootClass = '', options = {}) {
     })
   )
 
+  // Node đã xuất ảnh (vector/icon/hình xoay, image fill): preview hiện đúng ảnh render từ Figma thay vì khối giữ chỗ.
+  const exported = figmaData.nodeImageExports || {}
+  applyExportedImages(result.previewRoot, exported)
+  for (const preview of Object.values(result.componentPreviews)) if (preview) applyExportedImages(preview, exported)
+
   if (figmaData.imageFillWarning) result.warnings.push(figmaData.imageFillWarning)
   bindComponentSwiftLivePreview(result)
   return result
+}
+
+function applyExportedImages(node, exported) {
+  if (!node) return
+  const url = exported[node.figmaId]?.['2x'] || exported[node.figmaId]?.['3x']
+  if (node.kind === 'image' && url && !node.style?.imageUrl) node.style = { ...(node.style || {}), imageUrl: url, imageScaleMode: 'FIT', background: null }
+  for (const child of node.children || []) applyExportedImages(child, exported)
+  for (const child of node.previewChildren || []) applyExportedImages(child, exported)
 }
 
 function bindComponentSwiftLivePreview(result) {
@@ -158,10 +178,11 @@ function rawToPreview(node, parent, imageMap) {
     height: round(abs.height || 1)
   }
 
-  const visibleChildren = (node.children || []).filter(child => child.visible !== false)
+  const rasterized = Boolean(parent) && isRasterCandidate(node)
+  const visibleChildren = rasterized ? [] : (node.children || []).filter(child => child.visible !== false)
   const kind = node.type === 'TEXT'
     ? 'label'
-    : hasImageFill(node) && visibleChildren.length === 0
+    : rasterized || (hasImageFill(node) && visibleChildren.length === 0)
       ? 'image'
       : 'view'
 

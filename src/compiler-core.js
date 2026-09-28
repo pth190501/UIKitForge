@@ -1,4 +1,4 @@
-import { findComponentCandidates, firstVisibleSolidPaint } from './figma.js'
+import { findComponentCandidates, firstVisibleSolidPaint, isRasterCandidate } from './figma.js'
 import { createColorRegistry } from './color-registry.js'
 import { foldDiacritics, joinWordsCapped } from './identifier.js'
 
@@ -20,7 +20,8 @@ export function compileUIKit(figmaData, requestedRootClass = '', options = {}) {
   const usedNames = new Set([rootClass])
 
   for (const { componentId, node, all } of candidates.instances) {
-    if (node.id === sourceRoot.id) continue
+    // Component chỉ là icon/hình vẽ (vd Wallet, Chevron) → xuất ảnh thay vì sinh class UIView rỗng.
+    if (node.id === sourceRoot.id || isRasterCandidate(node)) continue
     let className = sanitizeClassName(`${node.name || 'Component'}View`, 'GeneratedComponentView')
     className = uniqueClassName(className, usedNames)
     componentMap.set(componentId, { className, source: node, instances: (all || [node]).filter(item => item.id !== sourceRoot.id) })
@@ -48,18 +49,18 @@ export function compileUIKit(figmaData, requestedRootClass = '', options = {}) {
 
   for (const { componentId, entry, ir } of builtComponents) {
     files.push(
-      { path: `Components/${entry.className}/${entry.className}.swift`, name: `${entry.className}.swift`, language: 'swift', content: withConfigure(generateSwift(entry.className, ir, colorRegistry), ir.slots), kind: 'component', target: 'uikit-xib' },
+      { path: `Components/${entry.className}/${entry.className}.swift`, name: `${entry.className}.swift`, language: 'swift', content: withGradientHelper(withConfigure(generateSwift(entry.className, ir, colorRegistry), ir.slots)), kind: 'component', target: 'uikit-xib' },
       { path: `Components/${entry.className}/${entry.className}.xib`, name: `${entry.className}.xib`, language: 'xml', content: generateXib(entry.className, ir, deploymentTarget), kind: 'component', target: 'uikit-xib' },
-      { path: `UIKit-Code/Components/${entry.className}/${entry.className}.swift`, name: `${entry.className}.swift`, language: 'swift', content: withConfigure(generateSwiftProgrammatic(entry.className, ir, colorRegistry), ir.slots), kind: 'component', target: 'uikit-code' }
+      { path: `UIKit-Code/Components/${entry.className}/${entry.className}.swift`, name: `${entry.className}.swift`, language: 'swift', content: withGradientHelper(withConfigure(generateSwiftProgrammatic(entry.className, ir, colorRegistry), ir.slots)), kind: 'component', target: 'uikit-code' }
     )
-    components.push({ componentId, className: entry.className, sourceName: entry.source.name || 'Component' })
+    components.push({ componentId, className: entry.className, sourceName: entry.source.name || 'Component', sourceId: entry.source.id })
     componentIRs.push({ className: entry.className, ir })
   }
 
   files.unshift(
     { path: `${rootClass}/${rootClass}.xib`, name: `${rootClass}.xib`, language: 'xml', content: generateXib(rootClass, mainIR, deploymentTarget), kind: 'main', target: 'uikit-xib' },
-    { path: `${rootClass}/${rootClass}.swift`, name: `${rootClass}.swift`, language: 'swift', content: generateSwift(rootClass, mainIR, colorRegistry), kind: 'main', target: 'uikit-xib' },
-    { path: `UIKit-Code/${rootClass}/${rootClass}.swift`, name: `${rootClass}.swift`, language: 'swift', content: generateSwiftProgrammatic(rootClass, mainIR, colorRegistry), kind: 'main', target: 'uikit-code' }
+    { path: `${rootClass}/${rootClass}.swift`, name: `${rootClass}.swift`, language: 'swift', content: withGradientHelper(generateSwift(rootClass, mainIR, colorRegistry)), kind: 'main', target: 'uikit-xib' },
+    { path: `UIKit-Code/${rootClass}/${rootClass}.swift`, name: `${rootClass}.swift`, language: 'swift', content: withGradientHelper(generateSwiftProgrammatic(rootClass, mainIR, colorRegistry)), kind: 'main', target: 'uikit-code' }
   )
 
   warnings.push(...collectLayoutWarnings(mainIR))
@@ -131,6 +132,72 @@ function annotateInstanceOverrides(root, rawById, slotsByClass) {
   }
 }
 
+// Đoạn khác weight → NSAttributedString; phần còn lại không gắn .font nên UILabel dùng font/màu của chính label.
+function attributedTextLines(node, targetRef) {
+  const name = `${node.outlet}Attributed`
+  const lines = [`        let ${name} = NSMutableAttributedString(string: ${swiftString(node.text)})`]
+  const baseWeight = node.style.fontWeight
+  for (const run of node.textRuns.filter(item => item.fontWeight !== baseWeight)) {
+    lines.push(
+      `        ${name}.addAttribute(`,
+      '            .font,',
+      `            value: ${swiftFontExpression({ ...node.style, fontWeight: run.fontWeight }).replace(/\n\s*/, '')},`,
+      `            range: NSRange(location: ${run.start}, length: ${run.end - run.start})`,
+      '        )'
+    )
+  }
+  lines.push(`        ${targetRef === 'self' ? '' : `${targetRef}.`}attributedText = ${name}`)
+  return lines
+}
+
+function gradientLines(node, targetRef, hint, colorRegistry) {
+  const { gradient, radius } = node.style
+  const name = `${hint}Gradient`
+  const colors = gradient.stops.map((stop, index) => `            ${namedColor(colorRegistry, stop.rgba, `${hint}Gradient`)}${index < gradient.stops.length - 1 ? ',' : ''}`)
+  const lines = [
+    `        let ${name} = GradientLayerView()`,
+    `        ${name}.gradient.colors = [`,
+    ...colors,
+    '        ].compactMap { $0?.cgColor }',
+    `        ${name}.gradient.locations = [${gradient.stops.map(stop => formatNumber(stop.position)).join(', ')}]`,
+    `        ${name}.gradient.startPoint = CGPoint(x: ${formatNumber(gradient.start.x)}, y: ${formatNumber(gradient.start.y)})`,
+    `        ${name}.gradient.endPoint = CGPoint(x: ${formatNumber(gradient.end.x)}, y: ${formatNumber(gradient.end.y)})`
+  ]
+  if (gradient.type === 'radial') lines.push(`        ${name}.gradient.type = .radial`)
+  if (radius > 0) lines.push(`        ${name}.layer.cornerRadius = ${formatNumber(radius)}`)
+  lines.push(`        ${name}.install(in: ${targetRef === 'self' ? 'self' : targetRef})`)
+  return lines
+}
+
+// View nền gradient dùng layerClass = CAGradientLayer nên tự co giãn theo Auto Layout (không cần layoutSubviews).
+// `private` ở phạm vi file → mỗi file Swift sinh ra tự chứa, không trùng tên giữa các file.
+const GRADIENT_HELPER = `
+private final class GradientLayerView: UIView {
+    override class var layerClass: AnyClass { CAGradientLayer.self }
+
+    var gradient: CAGradientLayer {
+        (layer as? CAGradientLayer) ?? CAGradientLayer()
+    }
+
+    func install(in host: UIView) {
+        isUserInteractionEnabled = false
+        layer.masksToBounds = true
+        translatesAutoresizingMaskIntoConstraints = false
+        host.insertSubview(self, at: 0)
+        NSLayoutConstraint.activate([
+            leadingAnchor.constraint(equalTo: host.leadingAnchor),
+            trailingAnchor.constraint(equalTo: host.trailingAnchor),
+            topAnchor.constraint(equalTo: host.topAnchor),
+            bottomAnchor.constraint(equalTo: host.bottomAnchor)
+        ])
+    }
+}
+`
+
+function withGradientHelper(swift) {
+  return swift.includes('GradientLayerView()') ? `${swift}${GRADIENT_HELPER}` : swift
+}
+
 // Thêm `struct Content` + `configure(with:)` vào class component. Dùng struct thay vì nhiều tham số để không
 // vượt function_parameter_count (SwiftLint) khi component có nhiều text/ẩn-hiện khác nhau giữa các instance.
 function withConfigure(swift, slots) {
@@ -187,10 +254,11 @@ function buildIR(node, parentNode, componentMap, options = {}) {
     height: round(abs.height || 1)
   }
 
-  const isReusableInstance = node.type === 'INSTANCE' && node.componentId && componentMap.has(node.componentId) && node.id !== options.skipComponentForNodeId
+  const rasterized = node.id !== options.skipComponentForNodeId && parentNode !== null && isRasterCandidate(node)
+  const isReusableInstance = !rasterized && node.type === 'INSTANCE' && node.componentId && componentMap.has(node.componentId) && node.id !== options.skipComponentForNodeId
   const reusable = isReusableInstance ? componentMap.get(node.componentId) : null
-  const renderableChildren = visibleRenderableChildren(node)
-  const kind = reusable ? 'component' : inferKind(node, renderableChildren)
+  const renderableChildren = rasterized ? [] : visibleRenderableChildren(node)
+  const kind = rasterized ? 'image' : reusable ? 'component' : inferKind(node, renderableChildren)
 
   const ir = {
     id: xibId(node.id || cryptoSafeId()),
@@ -202,19 +270,24 @@ function buildIR(node, parentNode, componentMap, options = {}) {
     outlet: sanitizeOutletName(node.name || `${kind}_${shortId(node.id)}`),
     frame,
     arranged: isArranged(node, parentNode),
-    sizing: sizingOf(node, parentNode),
+    // Ảnh render từ Figma có kích thước cố định — HUG (tự co theo con) không còn nghĩa khi con đã bị gộp vào ảnh.
+    sizing: rasterized ? hugToFixed(sizingOf(node, parentNode)) : sizingOf(node, parentNode),
     priorities: {},
     constraints: [],
     stack: null,
     text: node.type === 'TEXT' ? String(node.characters || '') : '',
-    style: extractStyle(node),
+    textRuns: node.type === 'TEXT' ? textRunsOf(node) : null,
+    style: rasterized ? rasterStyle(extractStyle(node)) : extractStyle(node),
     layout: extractLayout(node),
     meta: {
       hasImageFill: hasImageFill(node),
       preservesChildrenOverImageFill: hasImageFill(node) && renderableChildren.length > 0,
       layoutPositioning: node.layoutPositioning || 'AUTO',
-      wraps: node.layoutWrap === 'WRAP'
+      wraps: node.layoutWrap === 'WRAP',
+      rasterized
     },
+    // Instance tái sử dụng: ghi chú nằm trong file component (cùng dữ liệu) — không lặp lại ở màn hình cha.
+    todos: reusable ? [] : todosOf(node, parentNode, rasterized),
     children: []
   }
 
@@ -223,6 +296,70 @@ function buildIR(node, parentNode, componentMap, options = {}) {
     layoutChildren(node, ir, renderableChildren)
   }
   return ir
+}
+
+// Fill/stroke/shadow của vector đã nằm sẵn trong ảnh export — giữ lại sẽ vẽ thêm một ô màu vuông sau icon.
+function rasterStyle(style) {
+  return { ...style, background: null, gradient: null, borderColor: null, borderWidth: 0, shadow: null }
+}
+
+// Những gì compiler chỉ làm xấp xỉ/bỏ qua → ghi chú "// TODO:" ngay tại dòng code của view đó (và gom vào TODO.md),
+// để dev biết chỗ nào cần chỉnh tay thay vì phải tự so từng layer với Figma. Câu ngắn để comment không vượt line_length.
+export function todosOf(node, parentNode = null, rasterized = false) {
+  const todos = []
+  const visible = item => item && item.visible !== false
+  const fills = (node.fills || []).filter(visible)
+  for (const paint of fills) {
+    if (paint.type === 'GRADIENT_ANGULAR' || paint.type === 'GRADIENT_DIAMOND') {
+      todos.push(`gradient ${paint.type === 'GRADIENT_ANGULAR' ? 'angular (conic)' : 'diamond'} chưa hỗ trợ; export nền thành ảnh hoặc vẽ tay.`)
+    }
+  }
+  if (!rasterized && node.type !== 'TEXT') {
+    const gradient = fills.find(paint => paint.type === 'GRADIENT_LINEAR' || paint.type === 'GRADIENT_RADIAL')
+    if (gradient && fills.some(paint => paint.type === 'SOLID')) todos.push('nhiều lớp fill (solid + gradient); code chỉ giữ lớp solid.')
+    else if (gradient?.type === 'GRADIENT_RADIAL') todos.push('radial gradient Figma là elip; SwiftUI/CAGradientLayer vẽ tròn — so lại với thiết kế.')
+    else if (gradient && !gradient.gradientHandlePositions) todos.push('gradient thiếu handle; đang giả định hướng trên → dưới.')
+  }
+  if (!rasterized && fills.filter(paint => paint.type === 'IMAGE').length && (node.children || []).some(visible)) {
+    todos.push('container có image fill làm nền; thêm UIImageView nền (asset chưa được export).')
+  }
+  const effects = (node.effects || []).filter(visible)
+  const unsupported = [...new Set(effects.filter(item => item.type !== 'DROP_SHADOW').map(item => item.type.toLowerCase().replace(/_/g, ' ')))]
+  if (unsupported.length) todos.push(`effect ${unsupported.join(', ')} chưa được sinh code.`)
+  if (effects.filter(item => item.type === 'DROP_SHADOW').length > 1) todos.push('nhiều drop shadow; code chỉ giữ shadow đầu tiên.')
+  if (node.blendMode && !['NORMAL', 'PASS_THROUGH'].includes(node.blendMode)) todos.push(`blend mode ${node.blendMode.toLowerCase()} chưa hỗ trợ.`)
+  if (Array.isArray(node.rectangleCornerRadii) && new Set(node.rectangleCornerRadii).size > 1) {
+    todos.push(`bo góc khác nhau (${node.rectangleCornerRadii.join('/')}); đang dùng góc lớn nhất cho cả 4 góc.`)
+  }
+  if (!rasterized && isAutoLayout(node)) {
+    if (node.layoutWrap === 'WRAP') todos.push('Auto Layout wrap; UIStackView không xuống dòng — cân nhắc UICollectionView.')
+    if ((node.itemSpacing || 0) < 0) todos.push(`spacing âm (${round(node.itemSpacing)}); UIStackView không chồng lấn — kiểm tra lại layout.`)
+  }
+  if (!rasterized && node.type !== 'TEXT' && Math.abs(node.rotation || 0) > 0.5) todos.push('node bị xoay; transform xoay chưa được sinh code.')
+  if (node.type === 'TEXT') {
+    const family = node.style?.fontFamily
+    if (family && !isSystemFontFamily(family)) todos.push(`font "${family}" cần bundle vào app (UIAppFonts trong Info.plist).`)
+    if (node.style?.textDecoration && node.style.textDecoration !== 'NONE') todos.push(`text decoration ${node.style.textDecoration.toLowerCase()} chưa được sinh code.`)
+  }
+  if (parentNode && node.layoutPositioning === 'ABSOLUTE' && isAutoLayout(parentNode)) {
+    const own = node.absoluteBoundingBox
+    const box = parentNode.absoluteBoundingBox
+    const overflows = own && box && (own.x < box.x || own.y < box.y || own.x + own.width > box.x + box.width || own.y + own.height > box.y + box.height)
+    if (overflows) todos.push('view absolute tràn ra ngoài cha; kiểm tra clipsToBounds và thứ tự z của cha.')
+  }
+  return todos
+}
+
+// TODO.md đi kèm export: gom mọi ghi chú theo từng file/view để dev có checklist việc cần làm tay.
+export function todoMarkdown(sections) {
+  const filled = sections.filter(section => section.items.length)
+  if (!filled.length) return ''
+  const blocks = filled.map(({ title, items }) => `## ${title}\n\n${items.map(({ outlet, name, todo }) => `- [ ] \`${outlet}\` (${name}): ${todo}`).join('\n')}`)
+  return `# TODO\n\nNhững chỗ UIKitForge chỉ sinh xấp xỉ hoặc chưa hỗ trợ. Mỗi mục cũng có \`// TODO:\` ngay tại dòng code tương ứng.\n\n${blocks.join('\n\n')}\n`
+}
+
+export function collectTodoItems(root) {
+  return flatten(root).flatMap(node => (node.todos || []).map(todo => ({ outlet: node.outlet, name: node.name, todo })))
 }
 
 function visibleRenderableChildren(node) {
@@ -246,6 +383,27 @@ function collectUnknownContainerTypes(node, types = new Set()) {
     collectUnknownContainerTypes(child, types)
   }
   return types
+}
+
+// Đoạn chữ khác kiểu (vd "Số **0123 456 789** của bạn…"). REST: characterStyleOverrides[i] trỏ vào
+// styleOverrideTable (0 = kiểu gốc, số 0 ở cuối có thể bị lược). Chỉ lấy đoạn khác font-weight gốc.
+export function textRunsOf(node) {
+  const overrides = node.characterStyleOverrides || []
+  const table = node.styleOverrideTable || {}
+  const text = String(node.characters || '')
+  const baseWeight = normalizeFontWeight(node.style?.fontWeight || 400)
+  const runs = []
+  for (let index = 0; index < text.length; index++) {
+    const weight = normalizeFontWeight(table[overrides[index]]?.fontWeight || baseWeight)
+    const last = runs[runs.length - 1]
+    if (last && last.fontWeight === weight) last.end = index + 1
+    else runs.push({ start: index, end: index + 1, fontWeight: weight })
+  }
+  return runs.some(run => run.fontWeight !== baseWeight) ? runs : null
+}
+
+function hugToFixed(sizing) {
+  return { h: sizing.h === 'HUG' ? 'FIXED' : sizing.h, v: sizing.v === 'HUG' ? 'FIXED' : sizing.v }
 }
 
 function inferKind(node, renderableChildren = visibleRenderableChildren(node)) {
@@ -308,7 +466,31 @@ function extractStyle(node) {
       x: round(effect.offset?.x || 0), y: round(effect.offset?.y || 0),
       blur: round(effect.radius || 0), spread: round(effect.spread || 0),
       color: paintColorToRgba(effect.color)
-    } : null
+    } : null,
+    // Nền gradient (không có màu đặc) — sinh CAGradientLayer / LinearGradient thay vì bỏ trống nền như trước.
+    gradient: node.type === 'TEXT' || fill ? null : gradientOf(node),
+    clipsContent: Boolean(node.clipsContent)
+  }
+}
+
+// Figma gradientHandlePositions nằm trong hệ toạ độ đơn vị của node (0..1, y hướng xuống) — trùng với
+// startPoint/endPoint của CAGradientLayer và UnitPoint của SwiftUI. Không có handle thì mặc định trên → dưới.
+function gradientOf(node) {
+  const paint = (node.fills || []).find(item => item?.visible !== false && (item?.type === 'GRADIENT_LINEAR' || item?.type === 'GRADIENT_RADIAL'))
+  if (!paint?.gradientStops?.length) return null
+  const radial = paint.type === 'GRADIENT_RADIAL'
+  const [h0, h1] = paint.gradientHandlePositions || []
+  const point = (handle, fallback) => handle ? { x: round(handle.x), y: round(handle.y) } : fallback
+  const opacity = paint.opacity == null ? 1 : paint.opacity
+  return {
+    type: radial ? 'radial' : 'linear',
+    stops: paint.gradientStops.map(stop => ({
+      position: round(stop.position),
+      rgba: paintColorToRgba({ ...stop.color, a: (stop.color?.a ?? 1) * opacity })
+    })),
+    start: point(h0, radial ? { x: 0.5, y: 0.5 } : { x: 0.5, y: 0 }),
+    end: point(h1, radial ? { x: 1, y: 1 } : { x: 0.5, y: 1 }),
+    approximated: !paint.gradientHandlePositions
   }
 }
 
@@ -488,12 +670,16 @@ function generateSwiftStyleLines(root, { includeStatic = false, rootRef = 'conte
     const target = targetRef === 'self' ? '' : `${targetRef}.` // self ngầm định — tránh redundantSelf của SwiftFormat
     const hint = node.outlet || 'root'
     const style = node.style || {}
+    if (includeStatic) lines.push(...todoCommentLines(node, '        '))
     if (index > 0 && node.kind === 'component' && node.overrides?.length) lines.push(...configureCallLines(target, node.overrides))
     if (includeStatic && style.background) lines.push(`        ${target}backgroundColor = ${namedColor(colorRegistry, style.background, `${hint}Background`)}`)
     if (style.radius > 0) {
       lines.push(`        ${target}layer.cornerRadius = ${formatNumber(style.radius)}`)
-      lines.push(`        ${target}layer.masksToBounds = true`)
+      // cornerRadius đã bo cả nền/viền mà không cần clip; chỉ clip khi Figma bật clipsContent (hoặc ảnh cần bo),
+      // nếu không phần tử tràn góc (nhãn "Hot") sẽ bị cắt như trong preview trước đây.
+      if (style.clipsContent || node.kind === 'image') lines.push(`        ${target}layer.masksToBounds = true`)
     }
+    if (includeStatic && style.gradient && node.kind !== 'image') lines.push(...gradientLines(node, targetRef, hint, colorRegistry))
     if (style.borderColor && style.borderWidth > 0) {
       lines.push(`        ${target}layer.borderColor = ${cgColor(namedColor(colorRegistry, style.borderColor, `${hint}Border`))}`)
       lines.push(`        ${target}layer.borderWidth = ${formatNumber(style.borderWidth)}`)
@@ -507,6 +693,7 @@ function generateSwiftStyleLines(root, { includeStatic = false, rootRef = 'conte
         if (style.textAlign !== 'left') lines.push(`        ${target}textAlignment = .${swiftTextAlignment(style.textAlign)}`)
       }
       lines.push(`        ${target}font = ${swiftFontExpression(style)}`)
+      if (includeStatic && node.textRuns) lines.push(...attributedTextLines(node, targetRef))
       // adjustsFontForContentSizeCategory: UIFont.systemFont không tự scale theo Dynamic Type như SwiftUI's
       // .system(size:) — phải bật cờ này + UIFontMetrics ở trên thì UILabel mới tôn trọng cỡ chữ hệ thống.
       lines.push(`        ${target}adjustsFontForContentSizeCategory = true`)
@@ -518,8 +705,14 @@ function generateSwiftStyleLines(root, { includeStatic = false, rootRef = 'conte
       // VoiceOver: layer Figma không phân biệt ảnh trang trí và ảnh nội dung, nên coi mọi UIImageView là
       // nội dung có nghĩa và gán accessibilityLabel từ tên layer; tên vô nghĩa (Rectangle 12, Frame 3...)
       // vẫn còn hơn im lặng hoàn toàn với VoiceOver.
-      lines.push(`        ${target}isAccessibilityElement = true`)
-      lines.push(`        ${target}accessibilityLabel = ${swiftString(humanizeLayerName(node.name))}`)
+      // Ảnh xuất từ icon/hình vẽ (vector) gần như luôn là trang trí cạnh text → ẩn khỏi VoiceOver thay vì đọc
+      // tên layer vô nghĩa ("Frame 2085667765"). Ảnh nội dung (image fill) vẫn giữ nhãn như trước.
+      if (node.meta?.rasterized) {
+        lines.push(`        ${target}isAccessibilityElement = false`)
+      } else {
+        lines.push(`        ${target}isAccessibilityElement = true`)
+        lines.push(`        ${target}accessibilityLabel = ${swiftString(humanizeLayerName(node.name))}`)
+      }
     }
     if (style.shadow) {
       lines.push(`        ${target}layer.shadowColor = ${cgColor(namedColor(colorRegistry, style.shadow.color || 'rgba(0, 0, 0, 0.2)', `${hint}Shadow`))}`)
@@ -540,9 +733,30 @@ function allowLongLiteralLines(lines) {
     : [`${line.match(/^\s*/)[0]}// swiftlint:disable:next line_length`, line])
 }
 
+// Figma ghi font hệ thống Apple bằng tên hiển thị ("SF Pro Display/Text", "SF Compact") — không phải tên
+// đăng ký trên iOS, nên UIFont(name:) luôn nil và còn bỏ qua weight. Coi là font hệ thống.
+// Tách comment dài thành nhiều dòng để không vượt line_length 120 của SwiftLint (comment cũng bị tính).
+export function todoCommentLines(node, indent, width = 110) {
+  return (node.todos || []).flatMap(todo => {
+    const lines = []
+    let current = `${indent}// TODO: [${node.outlet}]`
+    for (const word of todo.split(' ')) {
+      if (current.length + word.length + 1 > width) {
+        lines.push(current)
+        current = `${indent}//   ${word}`
+      } else current += ` ${word}`
+    }
+    return [...lines, current]
+  })
+}
+
+export function isSystemFontFamily(family) {
+  return !family || /^(system|\.?sf pro|sf compact|\.?sf ui|san francisco)/i.test(String(family).trim())
+}
+
 function swiftFontExpression(style) {
   const weight = swiftFontWeight(style.fontWeight)
-  const base = style.fontFamily && style.fontFamily !== 'System'
+  const base = style.fontFamily && !isSystemFontFamily(style.fontFamily)
     ? `UIFont(name: ${swiftString(style.fontFamily)}, size: ${formatNumber(style.fontSize)}) ?? .systemFont(ofSize: ${formatNumber(style.fontSize)}, weight: .${weight})`
     : `UIFont.systemFont(ofSize: ${formatNumber(style.fontSize)}, weight: .${weight})`
   // UIFontMetrics giữ đúng size Figma ở cỡ chữ mặc định nhưng vẫn scale theo Dynamic Type,
@@ -842,8 +1056,7 @@ function collectLayoutWarnings(root) {
   for (const node of flatten(root)) {
     if (node !== root && !node.arranged && !hasTwoAxisConstraints(node.constraints || [])) warnings.push(`${node.name}: UIKitForge could not infer a complete two-axis Auto Layout rule.`)
     if (node.meta?.wraps) warnings.push(`${node.name}: Figma wrap Auto Layout has no UIStackView equivalent; children were laid out in a single line.`)
-    if (node.type === 'VECTOR' || node.type === 'BOOLEAN_OPERATION') warnings.push(`${node.name}: vector geometry is still represented as a UIView placeholder; SVG/PDF asset export is the next compiler stage.`)
-    if (node.kind === 'image') warnings.push(`${node.name}: image fill is represented as UIImageView but the binary asset is not exported yet.`)
+    if (node.meta?.rasterized) warnings.push(`${node.name}: vector/rotated artwork is exported from Figma as the image asset "${node.outlet}" (@2x/@3x) — not editable as vector in code.`)
     if (node.meta?.preservesChildrenOverImageFill) warnings.push(`${node.name}: Figma uses an image fill on a container. UIKitForge preserved its child hierarchy instead of collapsing the container into UIImageView; the background image asset is not exported yet.`)
     // HIG: vùng chạm tối thiểu 44x44pt. Component instance (INSTANCE trong Figma) thường là nút/control
     // tương tác, nên đây là proxy hợp lý dù compiler chưa model được khái niệm "tappable" tường minh.

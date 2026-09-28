@@ -101,11 +101,52 @@ async function fetchNodeImageExports(fileKey, root, token) {
 
 function collectImageFillNodeIds(root) {
   const ids = []
-  walkFigma(root, node => {
+  const visit = (node, isRoot) => {
+    if (!node || node.visible === false) return
+    // Node phức tạp (vector/icon/hình xoay) xuất nguyên cụm thành 1 ảnh — không đi vào con nữa.
+    if (!isRoot && isRasterCandidate(node)) { ids.push(node.id); return }
     const hasNoRenderableChildren = !(node.children || []).some(child => child.visible !== false)
     if (hasNoRenderableChildren && (node.fills || []).some(fill => fill?.visible !== false && fill?.type === 'IMAGE' && fill.imageRef)) ids.push(node.id)
-  })
+    for (const child of node.children || []) visit(child, false)
+  }
+  visit(root, true)
   return ids
+}
+
+// ---- Node khó dựng bằng UIKit/SwiftUI thuần → xuất ảnh từ Figma (PNG @2x/@3x) và dùng thẳng trong code ----
+const VECTOR_TYPES = new Set(['VECTOR', 'BOOLEAN_OPERATION', 'STAR', 'POLYGON', 'REGULAR_POLYGON', 'LINE'])
+const SHAPE_TYPES = new Set(['ELLIPSE', 'RECTANGLE'])
+const WRAPPER_TYPES = new Set(['GROUP', 'FRAME', 'INSTANCE', 'COMPONENT'])
+
+function visibleChildren(node) {
+  return (node.children || []).filter(child => child.visible !== false)
+}
+
+function hasImagePaint(node) {
+  return (node.fills || []).some(fill => fill?.visible !== false && fill?.type === 'IMAGE')
+}
+
+// Cả cây con chỉ gồm vector/hình khối/khung bọc (không text, không ảnh) — tức là một icon/hình minh hoạ.
+function isGraphicOnly(node) {
+  if (node.type === 'TEXT' || hasImagePaint(node)) return false
+  if (!VECTOR_TYPES.has(node.type) && !SHAPE_TYPES.has(node.type) && !WRAPPER_TYPES.has(node.type)) return false
+  return visibleChildren(node).every(isGraphicOnly)
+}
+
+function containsVector(node) {
+  return VECTOR_TYPES.has(node.type) || visibleChildren(node).some(containsVector)
+}
+
+function containsText(node) {
+  return node.type === 'TEXT' || visibleChildren(node).some(containsText)
+}
+
+export function isRasterCandidate(node) {
+  if (!node || node.visible === false || node.type === 'TEXT') return false
+  if (VECTOR_TYPES.has(node.type)) return true
+  if (visibleChildren(node).length && isGraphicOnly(node) && containsVector(node)) return true
+  // UIView xoay được nhưng Auto Layout tính theo khung chưa xoay → hình xoay (không chứa text) xuất ảnh cho đúng thiết kế.
+  return Math.abs(Number(node.rotation) || 0) > 0.5 && !containsText(node) && !hasImagePaint(node)
 }
 
 async function figmaGet(endpoint, token) {

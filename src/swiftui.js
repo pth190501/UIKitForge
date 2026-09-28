@@ -1,4 +1,4 @@
-import { formatNumber, parseRgba, swiftFontWeight, swiftString } from './compiler-core.js'
+import { formatNumber, isSystemFontFamily, todoCommentLines, parseRgba, swiftFontWeight, swiftString } from './compiler-core.js'
 import { normalizeArchitecture, viperEntity, viperInteractor, viperNames, viperSharedProtocols } from './uikit-router.js'
 
 // Sinh SwiftUI MVVM-R từ cùng IR với UIKit. Router dùng UIHostingController để chạy giống nhau từ iOS 13,
@@ -25,7 +25,26 @@ export function generateSwiftUIFiles({ rootClass, mainIR, componentIRs = [], dep
 }
 
 function swiftFile(path, content, kind) {
-  return { path, name: path.split('/').pop(), language: 'swift', content, kind, target: 'swiftui' }
+  return { path, name: path.split('/').pop(), language: 'swift', content: wrapLongComments(content), kind, target: 'swiftui' }
+}
+
+// Comment TODO được thụt lề theo độ sâu view nên chỉ biết độ dài thật ở bước cuối — tách lại ở đây cho line_length 120.
+function wrapLongComments(content, width = 120) {
+  return content.split('\n').flatMap(line => {
+    const match = line.match(/^(\s*)\/\/ (.*)$/)
+    if (line.length <= width || !match || match[2].startsWith('swiftlint:')) return [line]
+    const [, pad, text] = match
+    const out = []
+    let current = `${pad}//`
+    for (const word of text.split(' ')) {
+      if (current.length + word.length + 1 > width && current.trim() !== '//') {
+        out.push(current)
+        current = `${pad}//  `
+      }
+      current += ` ${word}`
+    }
+    return [...out, current]
+  }).join('\n')
 }
 
 // VIPER SwiftUI: View (struct) quan sát Presenter — Presenter giữ state text như ViewModel, Interactor/Router
@@ -134,6 +153,14 @@ function sectionsExtension(typeName, ctx) {
 
 // Thứ tự modifier: nội dung → kích thước → style → vị trí, để background/clip phủ đúng khung như UIView.
 function renderContent(node, ctx, isRoot = false, sizeModifiers = []) {
+  const lines = renderContentLines(node, ctx, isRoot, sizeModifiers)
+  // Ghi chú TODO đặt một lần trước view: bỏ qua lớp bọc Group (lần gọi bên trong sẽ ghi) và tham chiếu section
+  // (thân section ghi), tránh lặp. Comment trong ViewBuilder không ảnh hưởng implicit return.
+  const wrapper = (!isRoot && ctx.hiddenSlots?.has(node.id) && ctx.skipHidden !== node.id) || (!isRoot && node.kind === 'view' && node.children.length)
+  return wrapper ? lines : [...todoCommentLines(node, ''), ...lines]
+}
+
+function renderContentLines(node, ctx, isRoot, sizeModifiers) {
   // Phần tử ẩn ở vài instance: bọc Group + if để modifier vị trí/kích thước của cha vẫn gắn hợp lệ, và khi ẩn thì
   // rút khỏi stack như UIView.isHidden trong UIStackView.
   if (!isRoot && ctx.hiddenSlots?.has(node.id) && ctx.skipHidden !== node.id) {
@@ -149,7 +176,7 @@ function renderContent(node, ctx, isRoot = false, sizeModifiers = []) {
   }
   if (node.kind === 'label') {
     const [base, ...modifiers] = labelLines(node, ctx)
-    return expression([base], [...modifiers, ...sizeModifiers, ...styleModifiers(node, false, ctx)])
+    return expression(Array.isArray(base) ? base : [base], [...modifiers, ...sizeModifiers, ...styleModifiers(node, false, ctx)])
   }
   if (node.kind === 'image') return expression([`Image(${swiftString(node.outlet)})`], ['.resizable()', '.scaledToFit()', ...sizeModifiers, ...styleModifiers(node, true, ctx)])
   if (node.kind === 'component') return expression(componentCall(node), sizeModifiers)
@@ -159,7 +186,8 @@ function renderContent(node, ctx, isRoot = false, sizeModifiers = []) {
 
 // SwiftFormat: modifier sau view một dòng thì thụt vào; sau block/lời gọi nhiều dòng (kết thúc "}" hoặc ")") thì thẳng hàng.
 function expression(lines, modifiers) {
-  return [...lines, ...(lines[0].endsWith('{') || lines[0].endsWith('(') ? modifiers : indent(modifiers, 1))]
+  const head = lines.find(line => !line.trimStart().startsWith('//')) || ''
+  return [...lines, ...(head.endsWith('{') || head.endsWith('(') ? modifiers : indent(modifiers, 1))]
 }
 
 function componentCall(node) {
@@ -171,15 +199,19 @@ function componentCall(node) {
 function labelLines(node, ctx) {
   const { style } = node
   let textExpression = swiftString(node.text)
-  if (ctx.textSlots?.has(node.id)) {
+  // Đoạn khác weight → ghép Text + Text (iOS 13+); không đưa qua ViewModel vì chuỗi đơn không mang được kiểu từng đoạn.
+  const runsBase = node.textRuns ? textRunLines(node) : null
+  if (runsBase) {
+    textExpression = null
+  } else if (ctx.textSlots?.has(node.id)) {
     textExpression = ctx.textSlots.get(node.id)
   } else if (ctx.texts) {
     const property = uniqueName(ctx, node.outlet === 'router' ? 'routerText' : node.outlet)
     ctx.texts.push({ property, value: node.text })
     textExpression = `${ctx.owner}.${property}`
   }
-  const lines = [`Text(${textExpression})`]
-  if (style.fontFamily && style.fontFamily !== 'System') {
+  const lines = [runsBase || `Text(${textExpression})`]
+  if (style.fontFamily && !isSystemFontFamily(style.fontFamily)) {
     lines.push(`.font(.custom(${swiftString(style.fontFamily)}, size: ${formatNumber(style.fontSize)}))`, `.fontWeight(.${swiftFontWeight(style.fontWeight)})`)
   } else {
     lines.push(`.font(.system(size: ${formatNumber(style.fontSize)}, weight: .${swiftFontWeight(style.fontWeight)}))`)
@@ -188,6 +220,14 @@ function labelLines(node, ctx) {
   if (style.textAlign === 'center' || style.textAlign === 'right') lines.push(`.multilineTextAlignment(${style.textAlign === 'center' ? '.center' : '.trailing'})`)
   if (style.numberOfLines === 1) lines.push('.lineLimit(1)')
   return lines
+}
+
+function textRunLines(node) {
+  const parts = node.textRuns.map((run, index) => {
+    const piece = `Text(${swiftString(node.text.slice(run.start, run.end))})${run.fontWeight !== node.style.fontWeight ? `.fontWeight(.${swiftFontWeight(run.fontWeight)})` : ''}`
+    return index === 0 ? `    ${piece}` : `        + ${piece}`
+  })
+  return ['(', ...parts.flatMap(line => line.length > 100 ? ['    // swiftlint:disable:next line_length', line] : [line]), ')']
 }
 
 function containerLines(node, ctx) {
@@ -269,8 +309,17 @@ function styleModifiers(node, includeShape, ctx) {
   const { style } = node
   const hint = node.outlet || 'root'
   const lines = []
-  if (style.background) lines.push(`.background(${color(ctx, style.background, `${hint}Background`)})`)
-  if (includeShape && style.radius > 0) lines.push(`.clipShape(RoundedRectangle(cornerRadius: ${formatNumber(style.radius)}))`)
+  const fill = style.gradient && node.kind !== 'image' ? gradientLines(node, ctx, hint)
+    : style.background ? [color(ctx, style.background, `${hint}Background`)] : null
+  // Chỉ clip khi Figma bật clipsContent (hoặc ảnh cần bo): bo góc nền bằng RoundedRectangle.fill thì phần tử tràn
+  // góc (nhãn "Hot") không bị cắt — .clipShape sẽ cắt luôn cả overlay.
+  const clips = style.clipsContent || node.kind === 'image'
+  if (fill && includeShape && style.radius > 0 && !clips) {
+    lines.push('.background(', `    RoundedRectangle(cornerRadius: ${formatNumber(style.radius)})`, '        .fill(', ...indent(fill, 3), '        )', ')')
+  } else if (fill) {
+    lines.push(...(fill.length === 1 ? [`.background(${fill[0]})`] : ['.background(', ...indent(fill, 1), ')']))
+  }
+  if (includeShape && style.radius > 0 && clips) lines.push(`.clipShape(RoundedRectangle(cornerRadius: ${formatNumber(style.radius)}))`)
   if (includeShape && style.borderColor && style.borderWidth > 0) {
     lines.push(
       '.overlay(',
@@ -292,6 +341,17 @@ function styleModifiers(node, includeShape, ctx) {
   }
   if (style.opacity < 1) lines.push(`.opacity(${formatNumber(style.opacity)})`)
   return lines
+}
+
+function gradientLines(node, ctx, hint) {
+  const { gradient } = node.style
+  const stops = gradient.stops.map((stop, index) => `        .init(color: ${color(ctx, stop.rgba, `${hint}Gradient`)}, location: ${formatNumber(stop.position)})${index < gradient.stops.length - 1 ? ',' : ''}`)
+  const point = p => `UnitPoint(x: ${formatNumber(p.x)}, y: ${formatNumber(p.y)})`
+  if (gradient.type === 'radial') {
+    const radius = Math.hypot((gradient.end.x - gradient.start.x) * node.frame.width, (gradient.end.y - gradient.start.y) * node.frame.height)
+    return ['RadialGradient(', '    gradient: Gradient(stops: [', ...stops, '    ]),', `    center: ${point(gradient.start)},`, '    startRadius: 0,', `    endRadius: ${formatNumber(Math.round(radius * 100) / 100)}`, ')']
+  }
+  return ['LinearGradient(', '    gradient: Gradient(stops: [', ...stops, '    ]),', `    startPoint: ${point(gradient.start)},`, `    endPoint: ${point(gradient.end)}`, ')']
 }
 
 function swiftStackAlignment(stack) {
