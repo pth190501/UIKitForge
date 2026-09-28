@@ -1,5 +1,5 @@
 import { formatNumber, parseRgba, swiftFontWeight, swiftString } from './compiler-core.js'
-import { normalizeArchitecture } from './uikit-router.js'
+import { normalizeArchitecture, viperEntity, viperInteractor, viperNames, viperSharedProtocols } from './uikit-router.js'
 
 // Sinh SwiftUI MVVM-R từ cùng IR với UIKit. Router dùng UIHostingController để chạy giống nhau từ iOS 13,
 // tránh phải tách NavigationView (13) / NavigationStack (16).
@@ -17,6 +17,7 @@ export function generateSwiftUIFiles({ rootClass, mainIR, componentIRs = [], dep
   const files = [swiftFile(`SwiftUI/${base}/${names.view}.swift`, generateScreenView(names, mainIR, api, texts, colorRegistry, arch), 'main')]
   if (arch !== 'mvc') files.push(swiftFile(`SwiftUI/${base}/${names.viewModel}.swift`, generateViewModel(names, texts, api, arch), 'main'))
   if (arch === 'mvvm-r') files.push(swiftFile(`SwiftUI/${base}/${names.router}.swift`, generateRouter(names), 'main'))
+  if (arch === 'viper') files.splice(0, files.length, ...generateViperFiles(base, names, mainIR, api, colorRegistry))
   for (const { className, ir } of componentIRs) {
     files.push(swiftFile(`SwiftUI/Components/${className}.swift`, generateComponentView(className, ir, api, colorRegistry), 'component'))
   }
@@ -27,16 +28,46 @@ function swiftFile(path, content, kind) {
   return { path, name: path.split('/').pop(), language: 'swift', content, kind, target: 'swiftui' }
 }
 
-function generateScreenView(names, root, api, texts, colorRegistry, arch = 'mvvm-r') {
-  const ctx = createContext(api, texts, colorRegistry)
+// VIPER SwiftUI: View (struct) quan sát Presenter — Presenter giữ state text như ViewModel, Interactor/Router
+// giống UIKit. Presenter giữ strong Interactor/Router; Interactor.output và Router.viewController là weak.
+function generateViperFiles(base, names, mainIR, api, colorRegistry) {
+  const n = viperNames(base)
+  const texts = []
+  const file = (name, content) => swiftFile(`SwiftUI/${base}/${name}.swift`, content, 'main')
+  const view = generateScreenView(names, mainIR, api, texts, colorRegistry, 'viper', n)
+  return [
+    file(n.contract, `import Foundation\n\n${viperSharedProtocols(n)}`),
+    file(names.view, view),
+    file(n.presenter, generateViperPresenter(n, texts, api)),
+    file(n.interactor, viperInteractor(n)),
+    file(n.router, `import SwiftUI\nimport UIKit\n\nfinal class ${n.router} {\n    weak var viewController: UIViewController?\n\n    static func createModule() -> UIViewController {\n        let interactor = ${n.interactor}()\n        let router = ${n.router}()\n        let presenter = ${n.presenter}(interactor: interactor, router: router)\n        interactor.output = presenter\n        let viewController = UIHostingController(rootView: ${names.view}(presenter: presenter))\n        router.viewController = viewController\n        return viewController\n    }\n}\n\nextension ${n.router}: ${n.routerProtocol} {}\n`),
+    file(n.entity, viperEntity(n))
+  ]
+}
+
+function generateViperPresenter(n, texts, api) {
+  const header = api.observation
+    ? `import Observation\n\n@Observable\nfinal class ${n.presenter} {`
+    : `import Combine\n\nfinal class ${n.presenter}: ObservableObject {`
+  const state = textProperties(texts, api)
+  const stateBlock = state.length ? `${state.join('\n')}\n\n` : ''
+  return `${header}\n${stateBlock}    private let interactor: ${n.interactorInput}\n    private let router: ${n.routerProtocol}\n\n    init(\n        interactor: ${n.interactorInput},\n        router: ${n.routerProtocol}\n    ) {\n        self.interactor = interactor\n        self.router = router\n    }\n}\n\nextension ${n.presenter}: ${n.interactorOutput} {}\n`
+}
+
+function generateScreenView(names, root, api, texts, colorRegistry, arch = 'mvvm-r', viper = null) {
+  const owner = arch === 'viper' ? 'presenter' : 'viewModel'
+  const ctx = createContext(api, texts, colorRegistry, owner)
   const body = expression(renderContent(root, ctx, true), [api.ignoresSafeArea ? '.ignoresSafeArea()' : '.edgesIgnoringSafeArea(.all)'])
-  const property = arch === 'mvc' ? '' : api.observation ? `    let viewModel: ${names.viewModel}\n\n` : `    @ObservedObject var viewModel: ${names.viewModel}\n\n`
+  const ownerType = viper ? viper.presenter : names.viewModel
+  const property = arch === 'mvc' ? '' : api.observation ? `    let ${owner}: ${ownerType}\n\n` : `    @ObservedObject var ${owner}: ${ownerType}\n\n`
+  // VIPER: tách dòng để preview không vượt line_length khi tên màn hình dài.
   const construct = arch === 'mvc' ? `${names.view}()`
     : arch === 'mvvm' ? `${names.view}(viewModel: ${names.viewModel}())`
-      : `${names.view}(viewModel: ${names.viewModel}(router: ${names.router}()))`
+      : viper ? `${names.view}(\n        presenter: ${viper.presenter}(\n            interactor: ${viper.interactor}(),\n            router: ${viper.router}()\n        )\n    )`
+        : `${names.view}(\n        viewModel: ${names.viewModel}(router: ${names.router}())\n    )`
   const preview = api.observation
     ? `#Preview {\n    ${construct}\n}`
-    : `struct ${names.view}Previews: PreviewProvider {\n    static var previews: some View {\n        ${construct}\n    }\n}`
+    : `struct ${names.view}Previews: PreviewProvider {\n    static var previews: some View {\n        ${construct.replace(/\n/g, '\n    ')}\n    }\n}`
   return `import SwiftUI\n\nstruct ${names.view}: View {\n${property}    var body: some View {\n${indent(body, 2).join('\n')}\n    }\n}\n${sectionsExtension(names.view, ctx)}\n${preview}\n`
 }
 
@@ -49,12 +80,16 @@ function generateComponentView(className, root, api, colorRegistry) {
   return `import SwiftUI\n\nstruct ${className}: View {\n    var body: some View {\n${indent(body, 2).join('\n')}\n    }\n}\n${sectionsExtension(className, ctx)}\n${preview}\n`
 }
 
-function generateViewModel(names, texts, api, arch = 'mvvm-r') {
-  const properties = texts.map(({ property, value }) => api.observation
+function textProperties(texts, api) {
+  return texts.map(({ property, value }) => api.observation
     ? `    private(set) var ${property} = ${swiftString(value)}`
     : `    @Published private(set) var ${property} = ${swiftString(value)}`)
     // Câu text dài từ Figma không bẻ được — chỉ tắt line_length cho đúng dòng đó (ngưỡng 120 như .swiftlint.yml).
     .flatMap(line => line.length > 120 ? ['    // swiftlint:disable:next line_length', line] : [line])
+}
+
+function generateViewModel(names, texts, api, arch = 'mvvm-r') {
+  const properties = textProperties(texts, api)
   const header = api.observation
     ? `import Observation\n\n@Observable\nfinal class ${names.viewModel} {`
     : `import Combine\n\nfinal class ${names.viewModel}: ObservableObject {`
@@ -68,8 +103,8 @@ function generateRouter(names) {
   return `import SwiftUI\nimport UIKit\n\nfinal class ${names.router} {\n    weak var viewController: UIViewController?\n\n    static func makeViewController() -> UIViewController {\n        let router = ${names.router}()\n        let viewModel = ${names.viewModel}(router: router)\n        let viewController = UIHostingController(rootView: ${names.view}(viewModel: viewModel))\n        router.viewController = viewController\n        return viewController\n    }\n}\n`
 }
 
-function createContext(api, texts, colorRegistry) {
-  return { api, texts, colorRegistry, sections: [], used: new Set(['body', 'viewModel']) }
+function createContext(api, texts, colorRegistry, owner = 'viewModel') {
+  return { api, texts, colorRegistry, owner, sections: [], used: new Set(['body', 'viewModel', 'presenter']) }
 }
 
 function uniqueName(ctx, base) {
@@ -117,7 +152,7 @@ function labelLines(node, ctx) {
   if (ctx.texts) {
     const property = uniqueName(ctx, node.outlet === 'router' ? 'routerText' : node.outlet)
     ctx.texts.push({ property, value: node.text })
-    textExpression = `viewModel.${property}`
+    textExpression = `${ctx.owner}.${property}`
   }
   const lines = [`Text(${textExpression})`]
   if (style.fontFamily && style.fontFamily !== 'System') {

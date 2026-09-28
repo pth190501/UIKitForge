@@ -9,7 +9,7 @@ import { diffImageData, diffSeverity } from './pixel-diff.js'
 import { rerootSharedMVVMFile } from './export-layout.js'
 
 const STORAGE_KEY = 'uikitforge.figmaToken'
-const ARCHITECTURE_LABELS = { 'mvvm-r': 'MVVM-R', mvvm: 'MVVM', mvc: 'MVC' }
+const ARCHITECTURE_LABELS = { 'mvvm-r': 'MVVM-R', mvvm: 'MVVM', mvc: 'MVC', viper: 'VIPER' }
 const SESSION_KEY = 'uikitforge.figmaToken.session'
 
 const state = {
@@ -98,6 +98,7 @@ app.innerHTML = `
             <button type="button" role="radio" data-value="mvvm-r" aria-checked="true" class="active" title="View + ViewController + ViewModel + Router">MVVM-R</button>
             <button type="button" role="radio" data-value="mvvm" aria-checked="false" title="View + ViewController + ViewModel">MVVM</button>
             <button type="button" role="radio" data-value="mvc" aria-checked="false" title="View + ViewController">MVC</button>
+            <button type="button" role="radio" data-value="viper" aria-checked="false" title="View + Interactor + Presenter + Entity + Router">VIPER</button>
           </div>
         </div>
         <div class="field deployment-target-field">
@@ -575,6 +576,7 @@ function addImageAsset(zip, asset) {
 }
 
 function architectureFileSuffixes(architecture) {
+  if (architecture === 'viper') return 'ViewController/Presenter/Interactor/Router/Entity/Contract'
   return architecture === 'mvc' ? 'ViewController' : architecture === 'mvvm' ? 'ViewController/ViewModel' : 'ViewController/ViewModel/Router'
 }
 

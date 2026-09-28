@@ -37,7 +37,7 @@ UIKitForge is an experimental web IDE that reads a Figma node using a user-provi
 - Click any preview node to inspect frame, style and inferred constraints.
 - Download the selected file or export all generated source as a ZIP, including a generated `Colors.xcassets`.
 - Built-in demo so the editor/preview can be tested without a Figma token.
-- Output picker (UIKit · XIB / UIKit · Code / SwiftUI) and architecture picker (MVVM-R default, MVVM, MVC) next to the Generate button; switching either regenerates instantly from the already-loaded Figma data.
+- Output picker (UIKit · XIB / UIKit · Code / SwiftUI) and architecture picker (MVVM-R default, MVVM, MVC, VIPER) next to the Generate button; switching either regenerates instantly from the already-loaded Figma data.
 - Generated UIKit labels use `UIFontMetrics` + `adjustsFontForContentSizeCategory` for Dynamic Type, and generated `UIImageView`s get a VoiceOver `accessibilityLabel`.
 - Colors are centralized as named `Colors.xcassets` entries shared by UIKit and SwiftUI output, ready for a real Dark Mode palette (see [Dark Mode colors](#dark-mode-colors)).
 
