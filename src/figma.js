@@ -180,34 +180,57 @@ export function isRasterCandidate(node) {
   return Math.abs(Number(node.rotation) || 0) > 0.5 && !containsText(node) && !hasImagePaint(node)
 }
 
-async function figmaGet(endpoint, token) {
-  let response
-  try {
-    response = await fetch(endpoint, {
-      method: 'GET',
-      headers: { 'X-Figma-Token': token.trim() }
-    })
-  } catch (error) {
-    throw new Error(`Could not reach the Figma API from this browser. ${error?.message || ''}`.trim())
-  }
+const RETRYABLE_FIGMA_STATUSES = new Set([429, 502, 503, 504])
+const MAX_FIGMA_RETRIES = 2
 
-  if (!response.ok) {
+function retryDelay(response, attempt) {
+  const header = response?.headers?.get?.('Retry-After')
+  const retrySeconds = Number(header)
+  if (header && Number.isFinite(retrySeconds) && retrySeconds >= 0) {
+    return Math.min(5000, Math.round(retrySeconds * 1000))
+  }
+  return Math.min(2000, 300 * (2 ** attempt))
+}
+
+export async function figmaGet(endpoint, token) {
+  for (let attempt = 0; attempt <= MAX_FIGMA_RETRIES; attempt++) {
+    let response
+    try {
+      response = await fetch(endpoint, {
+        method: 'GET',
+        headers: { 'X-Figma-Token': token.trim() }
+      })
+    } catch (error) {
+      if (attempt < MAX_FIGMA_RETRIES) {
+        await new Promise(resolve => setTimeout(resolve, 300 * (2 ** attempt)))
+        continue
+      }
+      throw new Error(`Could not reach the Figma API from this browser. ${error?.message || ''}`.trim())
+    }
+
+    if (response.ok) return response.json()
+
+    if (RETRYABLE_FIGMA_STATUSES.has(response.status) && attempt < MAX_FIGMA_RETRIES) {
+      await new Promise(resolve => setTimeout(resolve, retryDelay(response, attempt)))
+      continue
+    }
+
     let detail = ''
     try {
       const body = await response.json()
       detail = body?.err || body?.message || JSON.stringify(body)
     } catch {
-      detail = await response.text()
+      try { detail = await response.text() } catch { detail = '' }
     }
 
     const suffix = detail ? ` — ${detail}` : ''
-    if (response.status === 403) throw new Error(`Figma denied access. Check token scope (file_content:read) and file permission${suffix}`)
+    if (response.status === 403) {
+      throw new Error(`Figma denied access. Check token scope (file_content:read) and file permission${suffix}`)
+    }
     if (response.status === 404) throw new Error(`Figma file/node was not found or is not visible to this token${suffix}`)
-    if (response.status === 429) throw new Error(`Figma API rate limit reached${suffix}`)
+    if (response.status === 429) throw new Error(`Figma API rate limit reached after retries${suffix}`)
     throw new Error(`Figma API returned HTTP ${response.status}${suffix}`)
   }
-
-  return response.json()
 }
 
 function extractRootNode(payload, nodeId) {
