@@ -6,6 +6,7 @@ import { generateUIKitMVVMFiles, normalizeArchitecture } from './uikit-router.js
 import { planColorNames, styleColorNames } from './color-registry.js'
 import { LINT_CONFIG_FILES } from './lint-config.js'
 import { discoverNativeRegions, nativePlanMarkdown, nativeSupportFiles } from './native-first.js'
+import { auditFigmaNodeCoverage, nodeCoverageMarkdown, auditExportPaths } from './node-coverage.js'
 
 export function compileUIKit(figmaData, requestedRootClass = '', options = {}) {
   // Lượt 1 chỉ để biết mỗi màu được dùng ở đâu (UIKit + SwiftUI) → chốt tên màu; lượt 2 sinh code với tên đó.
@@ -68,6 +69,22 @@ function finishCompile(result, figmaData) {
   for (const preview of Object.values(result.componentPreviews)) if (preview) applyExportedImages(preview, exported)
 
   if (figmaData.imageFillWarning) result.warnings.push(figmaData.imageFillWarning)
+  if (figmaData.assetExportWarning) result.warnings.push(figmaData.assetExportWarning)
+
+  const coverage = auditFigmaNodeCoverage(result, figmaData)
+  result.nodeCoverage = coverage
+  result.files.push(
+    { path: 'Reports/FIGMA_NODE_COVERAGE.md', name: 'FIGMA_NODE_COVERAGE.md', language: 'markdown', content: nodeCoverageMarkdown(coverage), kind: 'config' },
+    { path: 'Reports/FIGMA_NODE_COVERAGE.json', name: 'FIGMA_NODE_COVERAGE.json', language: 'json', content: JSON.stringify(coverage, null, 2), kind: 'config' }
+  )
+  if (coverage.status === 'INCOMPLETE') {
+    result.warnings.push(`Figma node audit incomplete: ${coverage.missingNodeIds.length} unrepresented nodes, ${coverage.assetIssues.length} unresolved assets. See Reports/FIGMA_NODE_COVERAGE.md.`)
+  }
+  const exportAudit = auditExportPaths(result.files)
+  if (!exportAudit.ok) {
+    result.warnings.push(`Generated export paths need review: ${exportAudit.collisions.length} collisions and ${exportAudit.unsafe.length} unsafe paths.`)
+  }
+  result.exportPathAudit = exportAudit
   bindComponentSwiftLivePreview(result)
   return result
 }
