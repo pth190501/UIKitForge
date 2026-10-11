@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict'
-import { batchFigmaNodeIds, fetchNodeImageExports } from '../src/figma.js'
+import { batchFigmaNodeIds, fetchNodeImageExports, figmaGet } from '../src/figma.js'
 
 const ids = Array.from({ length: 47 }, (_, index) => String(index))
 assert.deepEqual(batchFigmaNodeIds(ids).map(group => group.length), [20, 20, 7])
@@ -62,4 +62,24 @@ try {
   globalThis.fetch = originalFetch
 }
 
-console.log('✓ large Figma image batching, 2x/3x export, partial failure passed')
+let attempts = 0
+try {
+  globalThis.fetch = async () => {
+    attempts++
+    if (attempts === 1) {
+      return {
+        ok: false,
+        status: 429,
+        headers: { get: name => name === 'Retry-After' ? '0' : null }
+      }
+    }
+    return { ok: true, status: 200, json: async () => ({ ok: true }) }
+  }
+  const response = await figmaGet('https://api.figma.com/v1/mock', 'mock')
+  assert.deepEqual(response, { ok: true })
+  assert.equal(attempts, 2)
+} finally {
+  globalThis.fetch = originalFetch
+}
+
+console.log('✓ large Figma batching, partial export failures and rate-limit retries passed')
