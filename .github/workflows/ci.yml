@@ -10,6 +10,10 @@ on:
 permissions:
   contents: read
 
+concurrency:
+  group: uikitforge-ci-${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
 jobs:
   build:
     runs-on: ubuntu-latest
@@ -38,6 +42,36 @@ jobs:
 
   # SwiftLint trên Linux (image chính thức của realm) chạy ~1 phút, song song với job macOS (~3 phút, tốn phút macOS).
   # Lỗi lint thường gặp nhất nên báo sớm ở đây; job macOS vẫn giữ bước lint để đối chiếu đúng môi trường Xcode.
+  large-figma-audit:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    # First establish a baseline before making this a required gate.
+    continue-on-error: true
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+
+      - name: Setup Node
+        uses: actions/setup-node@v5
+        with:
+          node-version: 22
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Compile large Home Figma node 28104:5174
+        env:
+          FIGMA_TOKEN: ${{ secrets.FIGMA_TOKEN }}
+        run: node scripts/ci-live-figma-check.mjs
+
+      - name: Upload compiler report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: large-figma-audit
+          path: large-figma-artifacts
+          if-no-files-found: ignore
+
   swiftlint-linux:
     runs-on: ubuntu-latest
     steps:

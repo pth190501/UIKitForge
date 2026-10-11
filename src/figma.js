@@ -78,26 +78,56 @@ export async function fetchFigmaSelection({ figmaUrl, token }) {
 // Render PNG @2x/@3x cho từng node có IMAGE fill trực tiếp (không có con) — đây là đúng những node
 // compiler phân loại kind:'image' (xem hasImageFill trong compiler-core.js). Khớp theo Figma node id;
 // main.js sẽ nối id này với outlet sau khi compile để đặt tên file trong Assets.xcassets.
-async function fetchNodeImageExports(fileKey, root, token) {
+// Figma limits long image-export URLs. Large pages may contain hundreds of icons;
+// split node IDs into bounded requests and keep assets from successful batches.
+export function batchFigmaNodeIds(ids, batchSize = 20) {
+  const unique = [...new Set(ids.filter(Boolean))]
+  const size = Number.isInteger(batchSize) && batchSize > 0 ? batchSize : 20
+  const batches = []
+  for (let index = 0; index < unique.length; index += size) batches.push(unique.slice(index, index + size))
+  return batches
+}
+
+export async function fetchNodeImageExports(fileKey, root, token) {
   const nodeIds = collectImageFillNodeIds(root)
   if (!nodeIds.length) return { nodeImageExports: {}, assetExportWarning: null }
 
-  try {
-    const ids = nodeIds.join(',')
-    const [png2x, png3x] = await Promise.all([
-      figmaGet(`${FIGMA_API}/images/${encodeURIComponent(fileKey)}?ids=${encodeURIComponent(ids)}&scale=2&format=png`, token),
-      figmaGet(`${FIGMA_API}/images/${encodeURIComponent(fileKey)}?ids=${encodeURIComponent(ids)}&scale=3&format=png`, token)
-    ])
-    const nodeImageExports = {}
-    for (const id of nodeIds) {
-      const url2x = png2x?.images?.[id]
-      const url3x = png3x?.images?.[id]
-      if (url2x || url3x) nodeImageExports[id] = { '2x': url2x || null, '3x': url3x || null }
+  const nodeImageExports = {}
+  const failures = []
+  const batches = batchFigmaNodeIds(nodeIds)
+
+  // Two batches in flight at most. Each requests 2x and 3x independently,
+  // so failure at one resolution never discards the other.
+  async function processBatch(batch, batchIndex) {
+    const results = await Promise.allSettled([2, 3].map(scale =>
+      figmaGet(`${FIGMA_API}/images/${encodeURIComponent(fileKey)}?ids=${encodeURIComponent(batch.join(','))}&scale=${scale}&format=png`, token)
+    ))
+    for (let index = 0; index < results.length; index++) {
+      const result = results[index]
+      const scale = index === 0 ? '2x' : '3x'
+      if (result.status === 'rejected') {
+        failures.push(`Batch ${batchIndex + 1}/${batches.length} @${scale}: ${result.reason?.message || 'unknown error'}`)
+        continue
+      }
+      for (const id of batch) {
+        const url = result.value?.images?.[id]
+        if (url) {
+          if (!nodeImageExports[id]) nodeImageExports[id] = { '2x': null, '3x': null }
+          nodeImageExports[id][scale] = url
+        }
+      }
     }
-    return { nodeImageExports, assetExportWarning: null }
-  } catch (error) {
-    return { nodeImageExports: {}, assetExportWarning: `Image asset export (@2x/@3x) failed: ${error?.message || 'unknown error'}` }
   }
+
+  for (let index = 0; index < batches.length; index += 2) {
+    await Promise.all(batches.slice(index, index + 2).map((batch, offset) => processBatch(batch, index + offset)))
+  }
+
+  const missing = nodeIds.filter(id => !nodeImageExports[id])
+  const warning = failures.length || missing.length
+    ? `Image export incomplete: ${Object.keys(nodeImageExports).length}/${nodeIds.length} nodes resolved. ${failures.slice(0, 3).join(' | ')}${failures.length > 3 ? ` (+${failures.length - 3} more errors)` : ''}`
+    : null
+  return { nodeImageExports, assetExportWarning: warning }
 }
 
 function collectImageFillNodeIds(root) {
@@ -150,34 +180,57 @@ export function isRasterCandidate(node) {
   return Math.abs(Number(node.rotation) || 0) > 0.5 && !containsText(node) && !hasImagePaint(node)
 }
 
-async function figmaGet(endpoint, token) {
-  let response
-  try {
-    response = await fetch(endpoint, {
-      method: 'GET',
-      headers: { 'X-Figma-Token': token.trim() }
-    })
-  } catch (error) {
-    throw new Error(`Could not reach the Figma API from this browser. ${error?.message || ''}`.trim())
-  }
+const RETRYABLE_FIGMA_STATUSES = new Set([429, 502, 503, 504])
+const MAX_FIGMA_RETRIES = 2
 
-  if (!response.ok) {
+function retryDelay(response, attempt) {
+  const header = response?.headers?.get?.('Retry-After')
+  const retrySeconds = Number(header)
+  if (header && Number.isFinite(retrySeconds) && retrySeconds >= 0) {
+    return Math.min(5000, Math.round(retrySeconds * 1000))
+  }
+  return Math.min(2000, 300 * (2 ** attempt))
+}
+
+export async function figmaGet(endpoint, token) {
+  for (let attempt = 0; attempt <= MAX_FIGMA_RETRIES; attempt++) {
+    let response
+    try {
+      response = await fetch(endpoint, {
+        method: 'GET',
+        headers: { 'X-Figma-Token': token.trim() }
+      })
+    } catch (error) {
+      if (attempt < MAX_FIGMA_RETRIES) {
+        await new Promise(resolve => setTimeout(resolve, 300 * (2 ** attempt)))
+        continue
+      }
+      throw new Error(`Could not reach the Figma API from this browser. ${error?.message || ''}`.trim())
+    }
+
+    if (response.ok) return response.json()
+
+    if (RETRYABLE_FIGMA_STATUSES.has(response.status) && attempt < MAX_FIGMA_RETRIES) {
+      await new Promise(resolve => setTimeout(resolve, retryDelay(response, attempt)))
+      continue
+    }
+
     let detail = ''
     try {
       const body = await response.json()
       detail = body?.err || body?.message || JSON.stringify(body)
     } catch {
-      detail = await response.text()
+      try { detail = await response.text() } catch { detail = '' }
     }
 
     const suffix = detail ? ` — ${detail}` : ''
-    if (response.status === 403) throw new Error(`Figma denied access. Check token scope (file_content:read) and file permission${suffix}`)
+    if (response.status === 403) {
+      throw new Error(`Figma denied access. Check token scope (file_content:read) and file permission${suffix}`)
+    }
     if (response.status === 404) throw new Error(`Figma file/node was not found or is not visible to this token${suffix}`)
-    if (response.status === 429) throw new Error(`Figma API rate limit reached${suffix}`)
+    if (response.status === 429) throw new Error(`Figma API rate limit reached after retries${suffix}`)
     throw new Error(`Figma API returned HTTP ${response.status}${suffix}`)
   }
-
-  return response.json()
 }
 
 function extractRootNode(payload, nodeId) {
