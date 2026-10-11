@@ -80,7 +80,7 @@ function finishCompile(result, figmaData) {
   if (coverage.status === 'INCOMPLETE') {
     result.warnings.push(`Figma node audit incomplete: ${coverage.missingNodeIds.length} unrepresented nodes, ${coverage.assetIssues.length} unresolved assets. See Reports/FIGMA_NODE_COVERAGE.md.`)
   }
-  const exportAudit = auditExportPaths(result.files)
+  const exportAudit = auditExportPaths(result.files, result.swiftUIFiles)
   if (!exportAudit.ok) {
     result.warnings.push(`Generated export paths need review: ${exportAudit.collisions.length} collisions and ${exportAudit.unsafe.length} unsafe paths.`)
   }
