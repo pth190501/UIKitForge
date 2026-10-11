@@ -5,6 +5,7 @@ import { generateSwiftUIFiles } from './swiftui.js'
 import { generateUIKitMVVMFiles, normalizeArchitecture } from './uikit-router.js'
 import { planColorNames, styleColorNames } from './color-registry.js'
 import { LINT_CONFIG_FILES } from './lint-config.js'
+import { discoverNativeRegions, nativePlanMarkdown, nativeSupportFiles } from './native-first.js'
 
 export function compileUIKit(figmaData, requestedRootClass = '', options = {}) {
   // Lượt 1 chỉ để biết mỗi màu được dùng ở đâu (UIKit + SwiftUI) → chốt tên màu; lượt 2 sinh code với tên đó.
@@ -27,6 +28,16 @@ function finishCompile(result, figmaData) {
   result.colors = result.colorRegistry.entries()
   result.namedColors = Object.fromEntries(result.colors.map(({ name, rgba }) => [name, rgba]))
   result.files.push(...generateUIKitMVVMFiles({ rootClass: result.rootClass, architecture: result.architecture, scroll: result.scroll }), ...LINT_CONFIG_FILES)
+  const nativeRegions = discoverNativeRegions(figmaData.root)
+  result.nativeRegions = nativeRegions
+  result.files.push(...nativeSupportFiles(nativeRegions))
+  result.files.push({
+    path: 'NATIVE_UI_PLAN.md',
+    name: 'NATIVE_UI_PLAN.md',
+    language: 'markdown',
+    content: nativePlanMarkdown(figmaData.root, nativeRegions),
+    kind: 'config'
+  })
   // Lấy TODO từ IR trước khi hydrate preview (hydrate thay style bằng dữ liệu CSS, không mang theo todos).
   result.todos = [
     { title: result.rootClass, items: collectTodoItems(result.previewRoot) },
