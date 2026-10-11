@@ -111,6 +111,37 @@ Web IDE
       └── ZIP export
 ```
 
+## Large Figma support / native-first output
+
+UIKitForge now splits Figma image exports into bounded batches and retries transient
+API errors (including rate limits). A failed 3x image request does not discard
+the 2x image or assets already resolved by previous batches.
+
+When compiling an Figma screen, each UIKit ZIP includes `NATIVE_UI_PLAN.md`,
+with source node IDs and suggested native UIKit controls based on the Figma
+hierarchy. These are **candidate** controls, not verified interactions.
+
+For Figma screens with a probable banner or indicator region, UIKit output also
+includes the optional `NativeComponents/ForgeBannerCarouselView.swift`. This
+uses `UICollectionView` and `UIPageControl`, keeps the page count in sync with
+the configured items, and safely handles 0, 1 or many banners. It is intentionally
+not auto-inserted into the visual tree, since only the designer/developer can
+confirm which artwork and prototype interactions are intended.
+
+The latest large-screen CI target is Home Individual, node `28104:5174`
+in the Homepage Figma file (375 × 3999 pt). To enable real Figma CI checks:
+
+1. In GitHub **Settings → Secrets and variables → Actions**, add a secret named
+   `FIGMA_TOKEN` holding a read-only Figma Personal Access Token.
+2. Ensure the token can access the Homepage design file.
+3. Re-run the CI workflow on the pull request. Inspect the
+   `large-figma-audit` artifact and `visual-fidelity` results.
+
+**Without FIGMA_TOKEN, native fixture builds may pass but pixel-fit against
+the real Figma is UNVERIFIED.** Do not interpret a green CI check without a
+reference image as 100% fidelity. Final acceptance also requires UIKit
+screenshots from the target iOS Simulator/device at matching geometry.
+
 ## Important MVP limitations
 
 Browser Preview is intentionally a **fast approximation**, not UIKit itself.
