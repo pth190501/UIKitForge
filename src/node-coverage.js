@@ -108,21 +108,39 @@ export function nodeCoverageMarkdown(report) {
   return lines.join('\n')
 }
 
-// Separate output variants may intentionally share a relative filename.
-// Duplicates within one target are errors, as they silently overwrite ZIP entries.
-export function auditExportPaths(files = []) {
+// Audit the real per-mode ZIP manifests: shared files and configs may collide
+// with mode-specific files even when their declared targets are different.
+export function auditExportPaths(files = [], swiftUIFiles = []) {
   const collisions = []
   const unsafe = []
-  const byTarget = new Map()
-  for (const file of files) {
-    const path = String(file.path || '').replace(/\\/g, '/')
-    const target = file.target || 'shared'
-    if (!path || path.startsWith('/') || path.split('/').some(part => !part || part === '..' || part === '.')) {
-      unsafe.push({ target, path })
+  const normalize = file => String(file.path || '').replaceAll('\\', '/')
+  const check = file => {
+    const path = normalize(file)
+    if (!path || path.startsWith('/') || /^[A-Za-z]:/.test(path) ||
+      path.split('/').some(part => !part || part === '.' || part === '..')) {
+      unsafe.push({ target: file.target || 'shared', path })
     }
-    const key = `${target}:${path}`
-    if (byTarget.has(key)) collisions.push({ target, path })
-    byTarget.set(key, true)
+  }
+  for (const file of [...files, ...swiftUIFiles]) check(file)
+
+  const configs = files.filter(file => file.kind === 'config')
+  const variants = [
+    ['uikit-xib', [...files.filter(file => file.target === 'uikit-xib' || file.target === 'uikit'), ...configs]],
+    ['uikit-code', [
+      ...files.filter(file => file.target === 'uikit-code' || file.target === 'uikit')
+        .map(file => file.target === 'uikit' ? { ...file, path: `UIKit-Code/${file.path}` } : file),
+      ...configs
+    ]],
+    ['swiftui', [...swiftUIFiles, ...configs]]
+  ]
+  for (const [target, manifest] of variants) {
+    const seen = new Set()
+    for (const file of manifest) {
+      const path = normalize(file)
+      const key = path.toLowerCase()
+      if (seen.has(key)) collisions.push({ target, path })
+      seen.add(key)
+    }
   }
   return { ok: collisions.length === 0 && unsafe.length === 0, collisions, unsafe }
 }
