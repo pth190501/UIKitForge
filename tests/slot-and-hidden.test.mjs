@@ -21,6 +21,19 @@ assert.match(mainXib, /text="Emi bảo trì"/)
 assert.match(mainXib, /customClass="EmiAvatarView"/, 'component inside a SLOT should be placed in the main XIB')
 assert.ok(!compiled.warnings.some(w => w.includes('SLOT')), 'SLOT is a known type and should not warn')
 
+const xibSwift = compiled.files.find(file => file.path === 'GeneratedView/GeneratedView.swift').content
+const codeSwift = compiled.files.find(file => file.path === 'UIKit-Code/GeneratedView/GeneratedView.swift').content
+for (const source of [xibSwift, codeSwift]) {
+  assert.doesNotMatch(source, /func setHeader|func setContent2/, 'generated sample layout stays fixed')
+  assert.match(source, /TODO: \[header\].*Figma/)
+  assert.match(source, /TODO: \[content2\].*Figma/)
+}
+const slotManifest = compiled.files.find(file => file.path === 'FIGMA_UI_MANIFEST.md').content
+assert.match(slotManifest, /Regions to configure/)
+assert.match(slotManifest, /Header.*GeneratedView\.header.*TODO: bind app data; keep Figma sample views and layout/)
+const slotTodos = compiled.files.find(file => file.path === 'TODO.md').content
+assert.match(slotTodos, /`header` \(Header\): vùng cần nối dữ liệu ứng dụng/)
+
 // Instance ẩn (Ellipsis-horizontal visible:false) không được sinh class component thừa.
 const componentNames = compiled.components.map(c => c.className)
 assert.ok(componentNames.includes('EmiAvatarView'))
@@ -75,5 +88,13 @@ assert.doesNotMatch(mainXib.split('text="Emi bảo trì"')[1].split('</label>')[
 // Câu text dài: tắt line_length đúng dòng đó thay vì để SwiftLint fail.
 assert.match(compiled.files.find(file => file.path === 'GeneratedView/GeneratedView.swift').content,
   /\/\/ swiftlint:disable:next line_length\n\s+khuVucLongBienSeTamNgungKetNoi\.text = "Khu vực/)
+
+const unsupportedSlot = compileUIKit({ root: {
+  id: '10:1', type: 'FRAME', name: 'Unsupported Slot Screen', absoluteBoundingBox: { x: 0, y: 0, width: 200, height: 100 },
+  children: [{ id: '10:2', type: 'SLOT', name: 'Custom content', absoluteBoundingBox: { x: 0, y: 0, width: 200, height: 100 } }]
+} }, 'UnsupportedSlotView')
+const unsupportedSwift = unsupportedSlot.files.find(file => file.path === 'UnsupportedSlotView/UnsupportedSlotView.swift').content
+assert.match(unsupportedSwift, /TODO: \[customContent\].*Figma/)
+assert.match(unsupportedSlot.files.find(file => file.path === 'TODO.md').content, /`customContent` \(Custom content\): vùng cần nối dữ liệu ứng dụng/)
 
 console.log('✓ SLOT containers, unknown container types, hidden-instance components, Vietnamese outlet names, label colors passed')

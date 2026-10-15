@@ -5,6 +5,7 @@ import { generateSwiftUIFiles } from './swiftui.js'
 import { generateUIKitMVVMFiles, normalizeArchitecture } from './uikit-router.js'
 import { planColorNames, styleColorNames } from './color-registry.js'
 import { LINT_CONFIG_FILES } from './lint-config.js'
+import { generateFigmaDocuments } from './figma-documents.js'
 
 export function compileUIKit(figmaData, requestedRootClass = '', options = {}) {
   // Lượt 1 chỉ để biết mỗi màu được dùng ở đâu (UIKit + SwiftUI) → chốt tên màu; lượt 2 sinh code với tên đó.
@@ -58,6 +59,7 @@ function finishCompile(result, figmaData) {
 
   if (figmaData.imageFillWarning) result.warnings.push(figmaData.imageFillWarning)
   bindComponentSwiftLivePreview(result)
+  result.files.push(...generateFigmaDocuments(figmaData, result))
   return result
 }
 

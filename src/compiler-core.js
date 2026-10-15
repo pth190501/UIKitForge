@@ -735,6 +735,7 @@ export function todosOf(node, parentNode = null, rasterized = false) {
   const todos = []
   const visible = item => item && item.visible !== false
   const fills = (node.fills || []).filter(visible)
+  if (node.type === 'SLOT') todos.push('vùng cần nối dữ liệu ứng dụng; giữ view mẫu và layout như Figma.')
   for (const paint of fills) {
     if (paint.type === 'GRADIENT_DIAMOND') todos.push('gradient diamond chưa hỗ trợ; export nền thành ảnh hoặc vẽ tay.')
   }
@@ -781,7 +782,7 @@ export function todoMarkdown(sections) {
   const filled = sections.filter(section => section.items.length)
   if (!filled.length) return ''
   const blocks = filled.map(({ title, items }) => `## ${title}\n\n${items.map(({ outlet, name, todo }) => `- [ ] \`${outlet}\` (${name}): ${todo}`).join('\n')}`)
-  return `# TODO\n\nNhững chỗ UIKitForge chỉ sinh xấp xỉ hoặc chưa hỗ trợ. Mỗi mục cũng có \`// TODO:\` ngay tại dòng code tương ứng.\n\n${blocks.join('\n\n')}\n`
+  return `# TODO\n\nNhững vùng cần nối cấu hình/dữ liệu hoặc cần kiểm tra thủ công. Mỗi mục cũng có \`// TODO:\` tại view tương ứng.\n\n${blocks.join('\n\n')}\n`
 }
 
 export function collectTodoItems(root) {
