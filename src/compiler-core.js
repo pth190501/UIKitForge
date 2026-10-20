@@ -1618,7 +1618,7 @@ function collectLayoutWarnings(root) {
     if (node.meta?.wraps) warnings.push(`${node.name}: Figma wrap Auto Layout has no UIStackView equivalent; children were laid out in a single line.`)
     if (node.meta?.rasterized) {
       const source = VIEW_TYPES.has(node.type) ? 'vector/rotated artwork' : `unsupported Figma leaf type ${node.type}`
-      warnings.push(`${node.name}: ${source} is exported from Figma as the image asset "${node.outlet}" (@2x/@3x) — not editable as native views.`)
+      warnings.push(`${node.name}: ${source} is exported from Figma as the image asset "${node.assetName || node.outlet}" (@2x/@3x) — not editable as native views.`)
     }
     if (node.meta?.preservesChildrenOverImageFill) warnings.push(`${node.name}: Figma uses an image fill on a container. UIKitForge preserved its child hierarchy and exports the fill as the background image asset "${backgroundAssetName(node)}".`)
     // HIG: vùng chạm tối thiểu 44x44pt. Component instance (INSTANCE trong Figma) thường là nút/control
