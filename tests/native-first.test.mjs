@@ -31,6 +31,17 @@ assert.match(support[0].content, /scrollViewDidEndDecelerating/)
 assert.match(support[0].content, /guard !banners.isEmpty/)
 assert.equal(nativeSupportFiles([]).length, 0)
 
+const hostileName = '[Open](https://evil.test)\n<img>|Banner'
+const hostilePlan = nativePlanMarkdown({
+  id: '3:`1',
+  absoluteBoundingBox: { width: 375, height: 800 },
+  children: [{ id: '3:2', type: 'FRAME', name: hostileName, children: [] }]
+})
+assert.ok(hostilePlan.includes('- Root node: ``3:`1``'))
+assert.ok(hostilePlan.includes('\\[Open\\]\\(https://evil\\.test\\) \\<img\\>\\|Banner'))
+assert.doesNotMatch(hostilePlan, /\[Open\]\(https:\/\/evil\.test\)/)
+assert.doesNotMatch(hostilePlan, /<img>/)
+
 const compiled = compileUIKit(fidelityScreen, 'PromoView', { deploymentTarget: 13 })
 const generatedSupport = compiled.files.find(file => file.name === 'ForgeBannerCarouselView.swift')
 assert.ok(generatedSupport, 'Banner-bearing Figma design exports a native UIKit building block')

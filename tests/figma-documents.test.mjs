@@ -42,12 +42,28 @@ assert.match(manifest, /https:\/\/www\.figma\.com\/design\/exampleFile\?node-id=
 assert.match(manifest, /Services \\| quick actions/)
 assert.match(manifest, /Repeated instances: TagView × 3; sample views stay fixed as drawn/)
 assert.match(manifest, /Vibe Club.*6:10.*FRAME/)
-assert.match(manifest, /ON_CLICK.*NODE → 6:9/)
+assert.match(manifest, /ON\\_CLICK.*NODE → 6:9/)
 assert.match(manifest, /Button.*Primary/)
 assert.match(manifest, /Configured services.*6:11.*HomeView\.configuredServices.*TODO: bind app data; keep Figma sample views and layout/)
 assert.match(progress, /Native build \/ XIB validation: NOT VERIFIED/)
 assert.match(progress, /Configuration TODOs: GENERATED at visible Figma slots; sample views and layout remain fixed to the design/)
 assert.match(progress, /Simulator\/device rendering: NOT VERIFIED/)
 assert.doesNotMatch(progress, /Section status[\s\S]*\| DONE \|/)
+
+const hostileName = '[Open](https://evil.test)\n<img>|Section'
+const hostileData = clone(data)
+hostileData.root.name = hostileName
+hostileData.root.children[0].name = hostileName
+const hostileManifest = compileUIKit(hostileData, 'HomeView').files.find(file => file.path === 'FIGMA_UI_MANIFEST.md')?.content
+assert.ok(hostileManifest)
+assert.ok(hostileManifest.includes('\\[Open\\]\\(https://evil\\.test\\) \\<img\\>\\|Section'))
+assert.doesNotMatch(hostileManifest, /\[Open\]\(https:\/\/evil\.test\)/)
+assert.doesNotMatch(hostileManifest, /<img>/)
+
+const codeSpanData = clone(data)
+codeSpanData.source = {}
+codeSpanData.root.id = 'root`id'
+const codeSpanManifest = compileUIKit(codeSpanData, 'HomeView').files.find(file => file.path === 'FIGMA_UI_MANIFEST.md')?.content
+assert.ok(codeSpanManifest?.includes('- Figma node: ``root`id``'))
 
 console.log('✓ Figma manifest and implementation checkpoint passed')

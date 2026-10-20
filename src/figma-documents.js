@@ -63,25 +63,25 @@ export function generateFigmaDocuments(figmaData, compiled) {
       .map(([name, property]) => `${name}: ${property?.type || 'property'}${property?.value == null ? '' : ` = ${property.value}`}`)
     const files = (compiled.files || [])
       .filter(file => file.kind === 'component' && file.name?.startsWith(`${component.className}.`))
-      .map(file => `\`${file.path}\``)
-    return `| ${md(component.sourceName)} | \`${md(component.sourceId)}\` | \`${md(component.componentId)}\` | \`${md(component.className)}\` | ${md(properties.join('; ') || 'No exposed instance properties')} | ${files.join(', ') || 'See selected output'} |`
+      .map(file => codeSpan(file.path))
+    return `| ${md(component.sourceName)} | ${codeSpan(component.sourceId)} | ${codeSpan(component.componentId)} | ${codeSpan(component.className)} | ${md(properties.join('; ') || 'No exposed instance properties')} | ${files.join(', ') || 'See selected output'} |`
   })
-  const sectionLines = sections.map(section => `| ${md(section.name)} | \`${md(section.id)}\` | ${section.visible ? 'Visible' : 'Hidden'} | ${section.visibleNodes} | ${md(section.mapping)} | ${md(section.dynamic)} |`)
-  const hiddenLines = hiddenRoots.map(({ node }) => `| ${md(node.name || node.type)} | \`${md(node.id)}\` | ${md(node.type)} |`)
-  const variantLines = variantRows.map(({ node, name, value }) => `| ${md(node.name || node.type)} | \`${md(node.id)}\` | ${md(name)} | ${md(value)} |`)
+  const sectionLines = sections.map(section => `| ${md(section.name)} | ${codeSpan(section.id)} | ${section.visible ? 'Visible' : 'Hidden'} | ${section.visibleNodes} | ${md(section.mapping)} | ${md(section.dynamic)} |`)
+  const hiddenLines = hiddenRoots.map(({ node }) => `| ${md(node.name || node.type)} | ${codeSpan(node.id)} | ${md(node.type)} |`)
+  const variantLines = variantRows.map(({ node, name, value }) => `| ${md(node.name || node.type)} | ${codeSpan(node.id)} | ${md(name)} | ${md(value)} |`)
   const reactionLines = reactions.map(({ node, reaction }) => {
     const trigger = reaction.trigger?.type || 'Unknown trigger'
     const actions = reaction.actions || (reaction.action ? [reaction.action] : [])
     const details = actions.map(action => `${action.type || 'action'}${action.destinationId ? ` → ${action.destinationId}` : ''}`).join('; ')
-    return `| ${md(node.name || node.type)} | \`${md(node.id)}\` | ${md(trigger)} | ${md(details || 'No action details returned')} |`
+    return `| ${md(node.name || node.type)} | ${codeSpan(node.id)} | ${md(trigger)} | ${md(details || 'No action details returned')} |`
   })
   const colorLines = (compiled.colors || []).map(color => `| ${md(color.name)} | ${md(color.rgba)} |`)
   const warningLines = (compiled.warnings || []).map(warning => `- ${md(warning)}`)
   const slotLines = records.filter(({ node, visible }) => visible && node.type === 'SLOT').map(({ node }) => {
     const ir = irByFigmaId.get(node.id)
     const owner = irOwnerByFigmaId.get(node.id)
-    const target = ir && owner ? `\`${md(owner)}.${md(ir.outlet)}\`` : 'Generated in parent view'
-    return `| ${md(node.name || node.type)} | \`${md(node.id)}\` | ${target} | TODO: bind app data; keep Figma sample views and layout |`
+    const target = ir && owner ? `${md(owner)}.${md(ir.outlet)}` : 'Generated in parent view'
+    return `| ${md(node.name || node.type)} | ${codeSpan(node.id)} | ${target} | TODO: bind app data; keep Figma sample views and layout |`
   })
   const assetCount = Object.keys(figmaData.nodeImageExports || {}).length
   const sourceNode = source.nodeId || root.id || 'Not provided'
@@ -91,10 +91,10 @@ export function generateFigmaDocuments(figmaData, compiled) {
 
 ## Source and output
 
-- Figma node: ${figmaLink ? `[${md(sourceNode)}](${figmaLink})` : `\`${md(sourceNode)}\``}
-- Root type: \`${md(root.type || 'Unknown')}\`
+- Figma node: ${figmaLink ? `[${md(sourceNode)}](${figmaLink})` : codeSpan(sourceNode)}
+- Root type: ${codeSpan(root.type || 'Unknown')}
 - Figma frame: ${Number(rootBox.width || root.size?.x || 0)} × ${Number(rootBox.height || root.size?.y || 0)} pt
-- Generated UIKit root: \`${md(compiled.rootClass)}\`
+- Generated UIKit root: ${codeSpan(compiled.rootClass)}
 - iOS deployment target: ${compiled.deploymentTarget}+
 - Architecture: ${md(compiled.architecture || 'MVVM-R')}
 - Visible nodes compiled: ${visibleCount}; hidden subtree roots omitted: ${hiddenRoots.length}
@@ -190,7 +190,7 @@ This is a generation checkpoint. It records compiler output; it does not mark a 
 
 | Section | Node ID | Code generated | Native/UI verification |
 | --- | --- | --- | --- |
-${sections.map(section => `| ${md(section.name)} | \`${md(section.id)}\` | ${section.visible ? 'Yes' : 'Omitted (hidden)'} | NOT VERIFIED |`).join('\n') || '| (No child sections) | — | — | NOT VERIFIED |'}
+${sections.map(section => `| ${md(section.name)} | ${codeSpan(section.id)} | ${section.visible ? 'Yes' : 'Omitted (hidden)'} | NOT VERIFIED |`).join('\n') || '| (No child sections) | — | — | NOT VERIFIED |'}
 
 ## Remaining work
 
@@ -227,7 +227,7 @@ function sectionRow(section, rootVisible, irByFigmaId, componentById) {
   })
   const ir = irByFigmaId.get(section.id)
   const visible = rootVisible && section.visible !== false
-  const mapping = visible ? `${uikitType(ir)} in ${ir?.outlet ? `\`${ir.outlet}\`` : 'root view'}` : 'Omitted because this layer is hidden'
+  const mapping = visible ? `${uikitType(ir)} in ${ir?.outlet || 'root view'}` : 'Omitted because this layer is hidden'
   const evidence = !visible
     ? 'Hidden in source'
     : [
@@ -248,5 +248,15 @@ function uikitType(ir) {
 }
 
 function md(value) {
-  return String(value ?? '').replace(/[|\r\n]/g, character => character === '|' ? '\\|' : ' ')
+  // Tên và thuộc tính Figma là dữ liệu không tin cậy trong tài liệu xuất.
+  return String(value ?? '')
+    .replace(/[\r\n]/g, ' ')
+    .replace(/[\\`*_{}\[\]()#+\-.!|<>]/g, '\\$&')
+}
+
+function codeSpan(value) {
+  const text = String(value ?? '').replace(/[\r\n]/g, ' ')
+  const fence = '`'.repeat(Math.max(1, ...(text.match(/`+/g) || []).map(run => run.length + 1)))
+  const padding = text.trim() && (/^\s|\s$/.test(text)) ? ' ' : ''
+  return `${fence}${padding}${text}${padding}${fence}`
 }

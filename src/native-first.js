@@ -50,7 +50,7 @@ export function nativePlanMarkdown(root, regions = discoverNativeRegions(root)) 
     'This mapping is based on layer names and hierarchy, not verified runtime behaviour.',
     'Keep existing visual output intact until each replacement passes native screenshot checks.',
     '',
-    `- Root node: \`${root?.id || 'unknown'}\``,
+    `- Root node: ${codeSpan(root?.id || 'unknown')}`,
     `- Root dimensions: ${root?.absoluteBoundingBox?.width || '?'} × ${height || '?'} pt`,
     `- Native candidates: ${regions.length}`,
     '',
@@ -68,7 +68,7 @@ export function nativePlanMarkdown(root, regions = discoverNativeRegions(root)) 
   ]
   if (!regions.length) lines.push('No high-confidence native regions were detected from layer names.')
   for (const region of regions) {
-    lines.push(`- **${region.name.replace(/[\r\n]/g, ' ')}** (\`${region.nodeId}\`) → ${region.suggestion}. ${region.reason}.`)
+    lines.push(`- **${markdownText(region.name)}** (${codeSpan(region.nodeId)}) → ${region.suggestion}. ${region.reason}.`)
   }
   if (regions.some(region => region.suggestion.includes('UIPageControl'))) {
     lines.push('', '## Banner component', '', 'A reusable `ForgeBannerCarouselView.swift` is provided in NativeComponents/ as an opt-in building block.')
@@ -78,6 +78,20 @@ export function nativePlanMarkdown(root, regions = discoverNativeRegions(root)) 
     '- 0/1/N dynamic item tests PASS', '- Screenshot comparison attached, with device/OS/scale recorded',
     '- All unverified differences documented (never claim 100% without a real render)', '')
   return lines.join('\n')
+}
+
+function markdownText(value) {
+  // Tên và ID từ Figma không được phép tạo cú pháp mới trong tài liệu xuất.
+  return String(value ?? '')
+    .replace(/[\r\n]/g, ' ')
+    .replace(/[\\`*_{}\[\]()#+\-.!|<>]/g, '\\$&')
+}
+
+function codeSpan(value) {
+  const text = String(value ?? '').replace(/[\r\n]/g, ' ')
+  const fence = '`'.repeat(Math.max(1, ...(text.match(/`+/g) || []).map(run => run.length + 1)))
+  const padding = text.trim() && (/^\s|\s$/.test(text)) ? ' ' : ''
+  return `${fence}${padding}${text}${padding}${fence}`
 }
 
 export function nativeSupportFiles(regions) {
