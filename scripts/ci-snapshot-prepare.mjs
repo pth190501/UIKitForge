@@ -82,9 +82,10 @@ for (const { fixture, figma } of SNAPSHOTS) {
       const urls = await figmaImages(figma.fileKey, [...new Set(nodes.map(node => node.figmaId))], '&scale=2')
       for (const node of nodes) {
         if (!urls[node.figmaId]) continue
-        const folder = join(assets, `${node.outlet}.imageset`)
-        write(join(folder, `${node.outlet}@2x.png`), await download(urls[node.figmaId]))
-        write(join(folder, 'Contents.json'), JSON.stringify({ images: [{ idiom: 'universal', filename: `${node.outlet}@2x.png`, scale: '2x' }], info: { author: 'UIKitForge', version: 1 } }))
+        const assetName = node.assetName || node.outlet
+        const folder = join(assets, `${assetName}.imageset`)
+        write(join(folder, `${assetName}@2x.png`), await download(urls[node.figmaId]))
+        write(join(folder, 'Contents.json'), JSON.stringify({ images: [{ idiom: 'universal', filename: `${assetName}@2x.png`, scale: '2x' }], info: { author: 'UIKitForge', version: 1 } }))
       }
       const refs = await figmaImages(figma.fileKey, [figma.nodeId], '&scale=1&use_absolute_bounds=true')
       if (refs[figma.nodeId]) {

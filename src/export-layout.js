@@ -4,5 +4,5 @@
 // đúng như README dặn ("UIKit-Code/ thay vì {rootClass}/").
 export function rerootSharedMVVMFile(file, outputTarget) {
   if (file.target !== 'uikit' || outputTarget !== 'uikit-code') return file
-  return { ...file, path: `UIKit-Code/${file.path}` }
+  return { ...file, sourceFile: file, path: `UIKit-Code/${file.path}` }
 }

@@ -1,13 +1,13 @@
 # UIKitForge
 
-**Figma → UIKit Swift + XIB Compiler with live browser preview.**
+**Figma → native iOS and Android UI module generator with live browser preview.**
 
-UIKitForge is an experimental web IDE that reads a Figma node using a user-provided Figma Personal Access Token, converts the design hierarchy into UIKit source files, and lets you edit generated Swift while seeing common UIKit style changes reflected instantly in a browser preview.
+UIKitForge is an experimental web IDE that reads a Figma screen using a user-provided Figma Personal Access Token, converts the design hierarchy into an iOS or Android integration module, and previews the shared layout in the browser. Generated Swift is editable with live UIKit style updates.
 
 ## MVP features
 
-- Paste a Figma `design`, `file`, or `proto` URL.
-- Supports node-specific URLs using `node-id`.
+- Paste a Figma Design/Prototype, legacy file, branch, page, node, component-set, or `community/file` URL. FigJam, Slides and Make files are outside the screen-generation scope.
+- A file/page URL or component-set link shows a target picker; UIKitForge fetches the selected node's full subtree before compiling. Node-specific links to a renderable layer compile directly.
 - User supplies their own Figma Personal Access Token.
 - Token is kept in browser session storage by default.
 - Optional **Remember on this device** stores the token in local storage.
@@ -15,6 +15,8 @@ UIKitForge is an experimental web IDE that reads a Figma node using a user-provi
 - Converts Figma nodes into an intermediate UIKit layout tree.
 - Generates a main `.swift` + `.xib` pair.
 - Detects distinct Figma `INSTANCE` component IDs and generates component `.swift` + `.xib` pairs.
+- Generates Jetpack Compose Kotlin screens and reusable composables from the same Figma-derived layout tree.
+- Packages Android drawable resources for direct integration into an existing Gradle module.
 - Generates `IBOutlet` declarations and XIB outlet connections.
 - Infers Auto Layout rules from Figma constraints (`LEFT`, `RIGHT`, `LEFT_RIGHT`, `CENTER`, `TOP`, `BOTTOM`, `TOP_BOTTOM`).
 - Browser preview for frames, text, fills, radius, borders, shadows, opacity and component boundaries.
@@ -36,10 +38,11 @@ UIKitForge is an experimental web IDE that reads a Figma node using a user-provi
 - Quantitative pixel-diff match % between the rasterized preview and the reference image (see [Pixel-diff comparison](#pixel-diff-comparison)).
 - Click any preview node to inspect frame, style and inferred constraints.
 - Download the selected file or export all generated source as a ZIP, including a generated `Colors.xcassets`.
+- ZIP exports include a structural Figma node-coverage report; per-output path-audit results and binary image-download warnings are recorded in `UIKitForge.generated.json`.
 - Built-in demo so the editor/preview can be tested without a Figma token.
-- Output picker (UIKit · XIB / UIKit · Code / SwiftUI) and architecture picker (MVVM-R default, MVVM, MVC, VIPER) next to the Generate button; switching either regenerates instantly from the already-loaded Figma data.
+- Output picker (UIKit · XIB / UIKit · Code / SwiftUI / Android · Compose) and architecture picker (MVVM-R default, MVVM, MVC, VIPER) next to Generate; architecture and iOS deployment settings apply to iOS outputs.
 - Generated UIKit labels use `UIFontMetrics` + `adjustsFontForContentSizeCategory` for Dynamic Type, and generated `UIImageView`s get a VoiceOver `accessibilityLabel`.
-- Colors are centralized as named `Colors.xcassets` entries shared by UIKit and SwiftUI output, ready for a real Dark Mode palette (see [Dark Mode colors](#dark-mode-colors)).
+- iOS colors are centralized as named `Colors.xcassets` entries shared by UIKit and SwiftUI. Android uses Compose `Color` values from the same IR. See [Dark Mode colors](#dark-mode-colors).
 
 ## Pixel-diff comparison
 
@@ -47,7 +50,15 @@ When a reference image is uploaded, UIKitForge rasterizes the compiled preview t
 
 ## Dark Mode colors
 
-Every color UIKitForge generates (`backgroundColor`, `textColor`, borders, shadows) is centralized into a single color registry per compile, deduped by RGBA value, and shared by UIKit and SwiftUI output as `UIColor(named:)` / `Color("...")`. The exported ZIP includes a matching `Colors.xcassets/<name>.colorset` for each one. Figma has no dark-mode variant to source from, so the generated Dark Appearance entry mirrors the Any Appearance value — edit the color sets in Xcode for a real dark palette.
+Every iOS color UIKitForge generates (`backgroundColor`, `textColor`, borders, shadows) is centralized into a single color registry per compile, deduped by RGBA value, and shared by UIKit and SwiftUI output as `UIColor(named:)` / `Color("...")`. The exported iOS ZIP includes a matching `Colors.xcassets/<name>.colorset` for each one. Figma has no dark-mode variant to source from, so the generated Dark Appearance entry mirrors the Any Appearance value — edit the color sets in Xcode for a real dark palette.
+
+## Android Jetpack Compose integration
+
+Select **Android · Compose** to export Kotlin composables and drawable resources from the selected Figma screen. Enter the Android module's `namespace`; generated code lives under `<namespace>.uikitforge.generated` and imports that module's `R` class.
+
+Copy `Android/src/main/java/` and `Android/src/main/res/` into the existing app module. Compose must be enabled in `buildFeatures`, with Compose Foundation and UI dependencies from the host app's Compose BOM. The generated screen preserves the design sample and assets; wire app data, navigation and prototype interactions in the consuming app.
+
+References: [Compose setup](https://developer.android.com/develop/ui/compose/setup-compose-dependencies-and-compiler), [Compose resources](https://developer.android.com/develop/ui/compose/resources), [Android namespace and R classes](https://developer.android.com/build/configure-app-module).
 
 ## Figma token
 
@@ -100,6 +111,7 @@ UIKitForge compiler
 Intermediate UIKit layout tree
       ├── Swift generator
       ├── XIB generator
+      ├── Jetpack Compose generator
       ├── Auto Layout inference
       └── Browser preview model
       ↓
@@ -111,11 +123,42 @@ Web IDE
       └── ZIP export
 ```
 
+## Large Figma support / native-first output
+
+UIKitForge now splits Figma image exports into bounded batches and retries transient
+API errors (including rate limits). A failed 3x image request does not discard
+the 2x image or assets already resolved by previous batches.
+
+When compiling an Figma screen, each UIKit ZIP includes `NATIVE_UI_PLAN.md`,
+with source node IDs and suggested native UIKit controls based on the Figma
+hierarchy. These are **candidate** controls, not verified interactions.
+
+For Figma screens with a probable banner or indicator region, UIKit output also
+includes the optional `NativeComponents/ForgeBannerCarouselView.swift`. This
+uses `UICollectionView` and `UIPageControl`, keeps the page count in sync with
+the configured items, and safely handles 0, 1 or many banners. It is intentionally
+not auto-inserted into the visual tree, since only the designer/developer can
+confirm which artwork and prototype interactions are intended.
+
+The latest large-screen CI target is Home Individual, node `28104:5174`
+in the Homepage Figma file (375 × 3999 pt). To enable real Figma CI checks:
+
+1. In GitHub **Settings → Secrets and variables → Actions**, add a secret named
+   `FIGMA_TOKEN` holding a read-only Figma Personal Access Token.
+2. Ensure the token can access the Homepage design file.
+3. Re-run the CI workflow on the pull request. Inspect the
+   `large-figma-audit` artifact and `visual-fidelity` results.
+
+**Without FIGMA_TOKEN, native fixture builds may pass but pixel-fit against
+the real Figma is UNVERIFIED.** Do not interpret a green CI check without a
+reference image as 100% fidelity. Final acceptance also requires UIKit
+screenshots from the target iOS Simulator/device at matching geometry.
+
 ## Important MVP limitations
 
-Browser Preview is intentionally a **fast approximation**, not UIKit itself.
+Browser Preview is intentionally a **fast approximation**, not UIKit or Jetpack Compose itself.
 
-Native validation is partial: the `native-validate` CI job (macOS runner, `.github/workflows/ci.yml`) runs `swiftc -typecheck` (iOS 13 + 17, UIKit + SwiftUI), `ibtool --compile` and `swiftlint --strict` on output generated from the test fixtures. It does not yet build a full app with `xcodebuild` or render on a Simulator — that still requires the planned macOS agent. CI runs on pushes to `main` and on pull requests targeting `main`.
+Native validation is partial: CI typechecks generated Android Compose fixtures with Gradle, and the `native-validate` job (macOS, `.github/workflows/ci.yml`) runs `swiftc -typecheck` (iOS 13 + 17, UIKit + SwiftUI), `ibtool --compile` and `swiftlint --strict`. It does not yet build a full host app for either platform. Simulator visual checks are reported separately and need a real Figma reference token.
 
 Other current limitations:
 
@@ -123,7 +166,7 @@ Other current limitations:
 - Complex vectors, masks, blend modes, gradients and advanced effects are not fully translated yet.
 - XIB edits do not currently re-parse into Browser Preview.
 - Browser preview does not execute arbitrary Swift. It recognizes a safe/common subset of UIKit style assignments.
-- Whole-file Figma URLs compile the first visible top-level node. Node-specific URLs are strongly recommended.
+- File/page URLs require an explicit target selection. Node-specific URLs are the fastest path to a specific screen.
 
 ## Next phases
 
@@ -156,4 +199,4 @@ The browser can then show both **Instant Preview** and **Native Preview**, with 
 
 ## Goal
 
-UIKitForge is intended to become a deterministic **Figma → UIKit compiler**, with AI optional for repair/edge cases rather than required for the core conversion path.
+UIKitForge is intended to become a deterministic **Figma → native iOS/Android UI module compiler**, with AI optional for repair/edge cases rather than required for the core conversion path.

@@ -1,11 +1,6 @@
-import { findComponentCandidates, firstVisibleSolidPaint, isRasterCandidate } from './figma.js'
+import { findComponentCandidates, firstVisibleSolidPaint, isRasterCandidate, VIEW_TYPES } from './figma.js'
 import { createColorRegistry } from './color-registry.js'
-import { foldDiacritics, joinWordsCapped } from './identifier.js'
-
-const VIEW_TYPES = new Set([
-  'FRAME', 'GROUP', 'SECTION', 'COMPONENT', 'COMPONENT_SET', 'INSTANCE', 'SLOT',
-  'RECTANGLE', 'ELLIPSE', 'VECTOR', 'BOOLEAN_OPERATION', 'STAR', 'POLYGON', 'LINE'
-])
+import { foldDiacritics, joinWordsCapped, MAX_IDENTIFIER_LENGTH } from './identifier.js'
 
 const MIN_DEPLOYMENT_TARGET = 13
 const MAX_DEPLOYMENT_TARGET = 18
@@ -45,9 +40,12 @@ export function compileUIKit(figmaData, requestedRootClass = '', options = {}) {
     ir.slots = componentSlots(ir, entry)
     builtComponents.push({ componentId, entry, ir })
   }
-  const mainIR = buildIR(sourceRoot, null, componentMap, { skipComponentForNodeId: sourceRoot.id })
+  const rasterRoot = sourceRoot.visible !== false && isRasterCandidate(sourceRoot)
+  const mainSource = rasterRoot ? rasterRootContainer(sourceRoot) : sourceRoot
+  const mainIR = buildIR(mainSource, null, componentMap, { skipComponentForNodeId: rasterRoot ? mainSource.id : sourceRoot.id })
   dedupeOutlets(mainIR)
   ensureUniqueIds(mainIR)
+  assignUniqueAssetNames([mainIR, ...builtComponents.map(({ ir }) => ir)])
   // Mỗi instance mang nội dung riêng (text/ẩn-hiện khác instance gốc) → gắn overrides để code gọi configure.
   const rawById = indexRawTree(sourceRoot)
   const slotsByClass = new Map(builtComponents.map(({ entry, ir }) => [entry.className, ir.slots]))
@@ -99,11 +97,29 @@ export function scrollInfo(sourceRoot, mainIR) {
   return { height: mainIR.frame.height, fixedHeight: mainIR.sizing?.v !== 'HUG' }
 }
 
+function rasterRootContainer(node) {
+  const frame = bounds(node)
+  return {
+    id: `uikitforge-root-${node.id || 'selected'}`,
+    type: 'FRAME',
+    name: `${node.name || 'Generated'} Image Container`,
+    absoluteBoundingBox: frame,
+    layoutMode: 'NONE',
+    children: [{
+      ...node,
+      visible: true,
+      absoluteBoundingBox: frame,
+      layoutPositioning: 'ABSOLUTE',
+      constraints: { horizontal: 'LEFT_RIGHT', vertical: 'TOP_BOTTOM' }
+    }]
+  }
+}
+
 // ---- Nội dung riêng từng instance (text override / ẩn-hiện) ----
 // Id node bên trong instance có dạng `<instanceId>;<id trong component>` — phần sau là khoá chung giữa mọi instance.
 // Id con trong instance: `I<instanceId>;<id gốc>` với instance cấp ngoài (id "6:2" → "I6:2;10:3"), hoặc
 // `<instanceId>;<id gốc>` khi chính instance đã nằm trong instance khác (id đã bắt đầu bằng "I...").
-function internalKey(rawId, instanceId) {
+export function internalKey(rawId, instanceId) {
   const id = String(rawId || '')
   for (const prefix of [`${instanceId};`, `I${instanceId};`]) {
     if (id.startsWith(prefix)) return id.slice(prefix.length)
@@ -454,7 +470,37 @@ private final class InnerShadowView: UIView {
 `
 
 export function backgroundAssetName(node) {
-  return `${node.outlet}Background`
+  return node.backgroundAssetName || `${node.outlet}Background`
+}
+
+function assignUniqueAssetNames(roots) {
+  const byBase = new Map()
+  for (const root of roots) for (const node of flatten(root)) {
+    if (node.kind === 'image') add(node, 'assetName', node.outlet, 'image')
+    if (node.style?.backgroundImage) add(node, 'backgroundAssetName', `${node.outlet}Background`, 'background')
+  }
+
+  const reserved = new Map([...byBase].map(([base, identities]) => [base, identities.keys().next().value]))
+  for (const [base, identities] of byBase) {
+    let suffix = 2
+    for (const [identity, entries] of [...identities].slice(1)) {
+      let name
+      do {
+        const suffixText = String(suffix++)
+        name = `${base.slice(0, MAX_IDENTIFIER_LENGTH - suffixText.length)}${suffixText}`
+      } while (reserved.has(name))
+      reserved.set(name, identity)
+      for (const [node, field] of entries) node[field] = name
+    }
+  }
+
+  function add(node, field, base, kind) {
+    const identity = `${node.figmaId || node.id}:${kind}`
+    if (!byBase.has(base)) byBase.set(base, new Map())
+    const identities = byBase.get(base)
+    if (!identities.has(identity)) identities.set(identity, [])
+    identities.get(identity).push([node, field])
+  }
 }
 
 const IMAGE_CONTENT_MODE = { FILL: '.scaleAspectFill', FIT: '.scaleAspectFit', STRETCH: '.scaleToFill', TILE: '.scaleToFill' }
@@ -733,8 +779,10 @@ function rasterStyle(style) {
 // để dev biết chỗ nào cần chỉnh tay thay vì phải tự so từng layer với Figma. Câu ngắn để comment không vượt line_length.
 export function todosOf(node, parentNode = null, rasterized = false) {
   const todos = []
+  if (rasterized) return todos
   const visible = item => item && item.visible !== false
   const fills = (node.fills || []).filter(visible)
+  if (node.type === 'SLOT') todos.push('vùng cần nối dữ liệu ứng dụng; giữ view mẫu và layout như Figma.')
   for (const paint of fills) {
     if (paint.type === 'GRADIENT_DIAMOND') todos.push('gradient diamond chưa hỗ trợ; export nền thành ảnh hoặc vẽ tay.')
   }
@@ -781,7 +829,7 @@ export function todoMarkdown(sections) {
   const filled = sections.filter(section => section.items.length)
   if (!filled.length) return ''
   const blocks = filled.map(({ title, items }) => `## ${title}\n\n${items.map(({ outlet, name, todo }) => `- [ ] \`${outlet}\` (${name}): ${todo}`).join('\n')}`)
-  return `# TODO\n\nNhững chỗ UIKitForge chỉ sinh xấp xỉ hoặc chưa hỗ trợ. Mỗi mục cũng có \`// TODO:\` ngay tại dòng code tương ứng.\n\n${blocks.join('\n\n')}\n`
+  return `# TODO\n\nNhững vùng cần nối cấu hình/dữ liệu hoặc cần kiểm tra thủ công. Mỗi mục cũng có \`// TODO:\` tại view tương ứng.\n\n${blocks.join('\n\n')}\n`
 }
 
 export function collectTodoItems(root) {
@@ -793,7 +841,7 @@ function visibleRenderableChildren(node) {
 }
 
 function isRenderable(node) {
-  return node.type === 'TEXT' || VIEW_TYPES.has(node.type) || isUnknownContainer(node)
+  return node.type === 'TEXT' || VIEW_TYPES.has(node.type) || isUnknownContainer(node) || isRasterCandidate(node)
 }
 
 // Figma thêm node type mới theo thời gian (SLOT từng bị bỏ qua như vậy) — node lạ nhưng có con vẫn là
@@ -805,7 +853,7 @@ function isUnknownContainer(node) {
 function collectUnknownContainerTypes(node, types = new Set()) {
   for (const child of node.children || []) {
     if (child.visible === false) continue
-    if (isUnknownContainer(child)) types.add(child.type)
+    if (isUnknownContainer(child) && !isRasterCandidate(child)) types.add(child.type)
     collectUnknownContainerTypes(child, types)
   }
   return types
@@ -1201,7 +1249,7 @@ function generateSwiftStyleLines(root, { includeStatic = false, rootRef = 'conte
     if (node.kind === 'image' && includeStatic) {
       lines.push(`        ${target}contentMode = .scaleAspectFit`)
       // Tên asset = outlet, khớp với Image(...) bên SwiftUI — xem generateUIKitAssets ở figma.js/main.js.
-      lines.push(`        ${target}image = UIImage(named: ${swiftString(node.outlet)})`)
+      lines.push(`        ${target}image = UIImage(named: ${swiftString(node.assetName || node.outlet)})`)
       // VoiceOver: layer Figma không phân biệt ảnh trang trí và ảnh nội dung, nên coi mọi UIImageView là
       // nội dung có nghĩa và gán accessibilityLabel từ tên layer; tên vô nghĩa (Rectangle 12, Frame 3...)
       // vẫn còn hơn im lặng hoàn toàn với VoiceOver.
@@ -1568,7 +1616,10 @@ function collectLayoutWarnings(root) {
   for (const node of flatten(root)) {
     if (node !== root && !node.arranged && !hasTwoAxisConstraints(node.constraints || [])) warnings.push(`${node.name}: UIKitForge could not infer a complete two-axis Auto Layout rule.`)
     if (node.meta?.wraps) warnings.push(`${node.name}: Figma wrap Auto Layout has no UIStackView equivalent; children were laid out in a single line.`)
-    if (node.meta?.rasterized) warnings.push(`${node.name}: vector/rotated artwork is exported from Figma as the image asset "${node.outlet}" (@2x/@3x) — not editable as vector in code.`)
+    if (node.meta?.rasterized) {
+      const source = VIEW_TYPES.has(node.type) ? 'vector/rotated artwork' : `unsupported Figma leaf type ${node.type}`
+      warnings.push(`${node.name}: ${source} is exported from Figma as the image asset "${node.assetName || node.outlet}" (@2x/@3x) — not editable as native views.`)
+    }
     if (node.meta?.preservesChildrenOverImageFill) warnings.push(`${node.name}: Figma uses an image fill on a container. UIKitForge preserved its child hierarchy and exports the fill as the background image asset "${backgroundAssetName(node)}".`)
     // HIG: vùng chạm tối thiểu 44x44pt. Component instance (INSTANCE trong Figma) thường là nút/control
     // tương tác, nên đây là proxy hợp lý dù compiler chưa model được khái niệm "tappable" tường minh.

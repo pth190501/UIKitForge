@@ -267,7 +267,7 @@ function renderContentLines(node, ctx, isRoot, sizeModifiers) {
     const [base, ...modifiers] = labelLines(node, ctx)
     return expression(Array.isArray(base) ? base : [base], [...modifiers, ...sizeModifiers, ...styleModifiers(node, false, ctx)])
   }
-  if (node.kind === 'image') return expression([`Image(${swiftString(node.outlet)})`], ['.resizable()', '.scaledToFit()', ...sizeModifiers, ...styleModifiers(node, true, ctx)])
+  if (node.kind === 'image') return expression([`Image(${swiftString(node.assetName || node.outlet)})`], ['.resizable()', '.scaledToFit()', ...sizeModifiers, ...styleModifiers(node, true, ctx)])
   if (node.kind === 'component') return expression(componentCall(node, ctx), sizeModifiers)
   const { base, modifiers } = containerLines(node, ctx)
   return expression(base, [...modifiers, ...sizeModifiers, ...styleModifiers(node, true, ctx)])
@@ -458,7 +458,7 @@ function styleModifiers(node, includeShape, ctx) {
   // được .clipped() cắt theo khung đó — không clip cả view (con tràn góc vẫn hiện).
   if (style.backgroundImage) {
     const mode = style.backgroundImage.scaleMode === 'FIT' ? '.scaledToFit()' : style.backgroundImage.scaleMode === 'FILL' || !style.backgroundImage.scaleMode ? '.scaledToFill()' : ''
-    lines.push('.background(', '    Color.clear', '        .overlay(', `            Image(decorative: ${swiftString(`${node.outlet}Background`)})`, '                .resizable()',
+    lines.push('.background(', '    Color.clear', '        .overlay(', `            Image(decorative: ${swiftString(node.backgroundAssetName || `${node.outlet}Background`)})`, '                .resizable()',
       ...(mode ? [`                ${mode}`] : []), '        )', '        .clipped()', ')')
   }
   if (fill && includeShape && style.radius > 0 && !clips) {

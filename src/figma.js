@@ -10,14 +10,26 @@ export function parseFigmaUrl(rawUrl) {
     throw new Error('Invalid Figma URL.')
   }
 
-  if (!/figma\.com$/i.test(url.hostname) && !/\.figma\.com$/i.test(url.hostname)) {
+  const hostname = url.hostname.toLowerCase()
+  if (url.protocol !== 'https:') throw new Error('Figma URLs must use HTTPS.')
+  if (hostname !== 'figma.com' && !hostname.endsWith('.figma.com')) {
     throw new Error('This is not a figma.com URL.')
   }
 
-  const pathMatch = url.pathname.match(/\/(?:design|file|proto)\/([^/]+)/i)
-  if (!pathMatch) throw new Error('Could not find the Figma file key in this URL.')
-
-  const fileKey = pathMatch[1]
+  const path = url.pathname.split('/').filter(Boolean)
+  const route = path[0]?.toLowerCase()
+  let fileKey
+  if (route === 'community') {
+    if (path[1]?.toLowerCase() !== 'file') throw new Error('This Figma community link does not point to a file.')
+    fileKey = path[2]
+  } else if (route === 'design' && path[2]?.toLowerCase() === 'branch') {
+    fileKey = path[3]
+  } else if (['design', 'proto', 'file'].includes(route)) {
+    fileKey = path[1]
+  } else {
+    throw new Error('Only Figma Design and Prototype links are supported.')
+  }
+  if (!fileKey) throw new Error('Could not find a Figma file key in this URL.')
   const rawNodeId = url.searchParams.get('node-id')
   const nodeId = rawNodeId ? normalizeNodeId(rawNodeId) : null
 
@@ -26,22 +38,54 @@ export function parseFigmaUrl(rawUrl) {
 
 export function normalizeNodeId(nodeId) {
   if (!nodeId) return null
-  const decoded = decodeURIComponent(nodeId)
+  let decoded
+  try {
+    decoded = decodeURIComponent(nodeId)
+  } catch {
+    throw new Error('Invalid Figma node ID.')
+  }
   if (decoded.includes(':')) return decoded
   return decoded.replace(/-/g, ':')
 }
 
-export async function fetchFigmaSelection({ figmaUrl, token }) {
+export async function fetchFigmaSelection({ figmaUrl, token, nodeId: requestedNodeId = null }) {
   if (!token?.trim()) throw new Error('Please enter a Figma Personal Access Token.')
 
   const parsed = parseFigmaUrl(figmaUrl)
-  const endpoint = parsed.nodeId
-    ? `${FIGMA_API}/files/${encodeURIComponent(parsed.fileKey)}/nodes?ids=${encodeURIComponent(parsed.nodeId)}`
-    : `${FIGMA_API}/files/${encodeURIComponent(parsed.fileKey)}?depth=8`
+  const nodeId = requestedNodeId ? normalizeNodeId(requestedNodeId) : parsed.nodeId
+  const indexOnly = !nodeId
+  // Dùng depth nông để chọn mục tiêu; tải node đã chọn không giới hạn chiều sâu theo API.
+  // Nguồn: https://developers.figma.com/docs/rest-api/file-endpoints/
+  const endpoint = nodeId
+    ? `${FIGMA_API}/files/${encodeURIComponent(parsed.fileKey)}/nodes?ids=${encodeURIComponent(nodeId)}`
+    : `${FIGMA_API}/files/${encodeURIComponent(parsed.fileKey)}?depth=3`
 
   const payload = await figmaGet(endpoint, token)
-  const root = extractRootNode(payload, parsed.nodeId)
+  const root = extractRootNode(payload, nodeId)
   if (!root) throw new Error('Figma returned data, but UIKitForge could not find the requested node.')
+
+  const nodeEntries = Object.values(payload.nodes || {}).filter(Boolean)
+  const selection = {
+    source: { ...parsed, nodeId },
+    name: payload.name || root.name || 'Figma Selection',
+    root,
+    components: Object.assign({}, payload.components, ...nodeEntries.map(entry => entry.components || {})),
+    componentSets: Object.assign({}, payload.componentSets, ...nodeEntries.map(entry => entry.componentSets || {})),
+    // /nodes trả styles trong từng node; /files trả styles ở cấp response.
+    styles: Object.assign({}, payload.styles, ...nodeEntries.map(entry => entry.styles || {})),
+    raw: payload,
+    indexOnly
+  }
+
+  if (indexOnly) {
+    return {
+      ...selection,
+      imageMap: {},
+      imageFillWarning: null,
+      nodeImageExports: {},
+      assetExportWarning: null
+    }
+  }
 
   const imageRefs = collectImageRefs(root)
   let imageMap = {}
@@ -60,57 +104,142 @@ export async function fetchFigmaSelection({ figmaUrl, token }) {
   const { nodeImageExports, assetExportWarning } = await fetchNodeImageExports(parsed.fileKey, root, token)
 
   return {
-    source: parsed,
-    name: payload.name || root.name || 'Figma Selection',
-    root,
-    components: payload.components || {},
-    componentSets: payload.componentSets || {},
-    // Endpoint /nodes trả styles theo từng node (nodes[id].styles), endpoint /files trả ở gốc — gộp cả hai.
-    styles: Object.assign({}, payload.styles, ...Object.values(payload.nodes || {}).map(entry => entry?.styles || {})),
+    ...selection,
     imageMap,
     imageFillWarning,
     nodeImageExports,
-    assetExportWarning,
-    raw: payload
+    assetExportWarning
   }
 }
 
-// Render PNG @2x/@3x cho từng node có IMAGE fill trực tiếp (không có con) — đây là đúng những node
-// compiler phân loại kind:'image' (xem hasImageFill trong compiler-core.js). Khớp theo Figma node id;
-// main.js sẽ nối id này với outlet sau khi compile để đặt tên file trong Assets.xcassets.
-async function fetchNodeImageExports(fileKey, root, token) {
-  const nodeIds = collectImageFillNodeIds(root)
+export function collectFigmaRootCandidates(root) {
+  const candidates = []
+  const seen = new Set()
+  const add = (node, parents = []) => {
+    const nodeId = String(node?.id || '')
+    if (!nodeId || seen.has(nodeId)) return
+    seen.add(nodeId)
+    candidates.push({ node, nodeId, type: node.type || 'NODE', label: [...parents, node.name || node.type || 'Untitled'].join(' › ') })
+  }
+
+  const addVariants = (componentSet, parents) => {
+    const setPath = [...parents, componentSet.name || 'Component set']
+    for (const variant of componentSet.children || []) {
+      if (variant.visible !== false && variant.type === 'COMPONENT') add(variant, setPath)
+    }
+  }
+
+  const visitNested = (node, parents) => {
+    if (!node || node.visible === false) return
+    if (node.type === 'COMPONENT_SET') {
+      addVariants(node, parents)
+      return
+    }
+    if (['FRAME', 'COMPONENT', 'INSTANCE'].includes(node.type)) {
+      add(node, parents)
+      return
+    }
+    const path = [...parents, node.name || node.type || 'Untitled']
+    if (['GROUP', 'SECTION'].includes(node.type)) add(node, parents)
+    for (const child of node.children || []) visitNested(child, path)
+  }
+
+  const visitPage = page => {
+    const pageName = page.name || 'Untitled page'
+    for (const child of page.children || []) {
+      if (child.visible === false) continue
+      if (child.type === 'COMPONENT_SET') addVariants(child, [pageName])
+      else {
+        add(child, [pageName])
+        visitNested(child, [pageName, child.name || child.type || 'Untitled'])
+      }
+    }
+  }
+
+  if (root?.type === 'DOCUMENT') {
+    for (const page of root.children || []) if (page.type === 'CANVAS' && page.visible !== false) visitPage(page)
+  } else if (root?.type === 'CANVAS') {
+    visitPage(root)
+  } else if (root?.type === 'COMPONENT_SET') {
+    addVariants(root, [])
+  } else if (root) {
+    add(root)
+  }
+  return candidates
+}
+
+export function requiresFigmaRootSelection(parsedUrl, figmaData) {
+  return !parsedUrl.nodeId || ['DOCUMENT', 'CANVAS', 'COMPONENT_SET'].includes(figmaData.root?.type)
+}
+
+// Chia node ID thành nhóm có giới hạn cho endpoint export ảnh Figma.
+export function batchFigmaNodeIds(ids, batchSize = 20) {
+  const unique = [...new Set((ids || []).filter(Boolean))]
+  const size = Number.isInteger(batchSize) && batchSize > 0 ? batchSize : 20
+  const batches = []
+  for (let index = 0; index < unique.length; index += size) batches.push(unique.slice(index, index + size))
+  return batches
+}
+
+export async function fetchNodeImageExports(fileKey, root, token) {
+  const nodeIds = [...new Set(collectRasterAssetNodeIds(root).filter(Boolean))]
   if (!nodeIds.length) return { nodeImageExports: {}, assetExportWarning: null }
 
-  try {
-    const ids = nodeIds.join(',')
-    const [png2x, png3x] = await Promise.all([
-      figmaGet(`${FIGMA_API}/images/${encodeURIComponent(fileKey)}?ids=${encodeURIComponent(ids)}&scale=2&format=png`, token),
-      figmaGet(`${FIGMA_API}/images/${encodeURIComponent(fileKey)}?ids=${encodeURIComponent(ids)}&scale=3&format=png`, token)
-    ])
-    const nodeImageExports = {}
-    for (const id of nodeIds) {
-      const url2x = png2x?.images?.[id]
-      const url3x = png3x?.images?.[id]
-      if (url2x || url3x) nodeImageExports[id] = { '2x': url2x || null, '3x': url3x || null }
+  const nodeImageExports = {}
+  const failures = []
+  const batches = batchFigmaNodeIds(nodeIds)
+
+  // Hai batch cùng lúc; mỗi batch giữ kết quả thành công riêng ở cả hai scale.
+  async function processBatch(batch, batchIndex) {
+    const results = await Promise.allSettled([2, 3].map(scale =>
+      figmaGet(`${FIGMA_API}/images/${encodeURIComponent(fileKey)}?ids=${encodeURIComponent(batch.join(','))}&scale=${scale}&format=png`, token)
+    ))
+    for (let index = 0; index < results.length; index++) {
+      const result = results[index]
+      const scale = index === 0 ? '2x' : '3x'
+      if (result.status === 'rejected') {
+        failures.push(`Batch ${batchIndex + 1}/${batches.length} @${scale} request failed: ${result.reason?.message || 'unknown error'}`)
+        continue
+      }
+      for (const id of batch) {
+        const url = result.value?.images?.[id]
+        if (!url) continue
+        if (!nodeImageExports[id]) nodeImageExports[id] = { '2x': null, '3x': null }
+        nodeImageExports[id][scale] = url
+      }
     }
-    return { nodeImageExports, assetExportWarning: null }
-  } catch (error) {
-    return { nodeImageExports: {}, assetExportWarning: `Image asset export (@2x/@3x) failed: ${error?.message || 'unknown error'}` }
   }
+
+  // Giới hạn request song song để file nhiều vector không tạo URL ảnh quá dài hoặc dồn tải vào Figma.
+  for (let index = 0; index < batches.length; index += 2) {
+    await Promise.all(batches.slice(index, index + 2).map((batch, offset) => processBatch(batch, index + offset)))
+  }
+
+  const missing = nodeIds.filter(id => !nodeImageExports[id])
+  const partial = nodeIds.filter(id => nodeImageExports[id] && (!nodeImageExports[id]['2x'] || !nodeImageExports[id]['3x']))
+  const issues = [
+    ...failures.slice(0, 3),
+    missing.length ? `${missing.length} node(s) have no render URL.` : null,
+    partial.length ? `${partial.length} node(s) have only one export scale.` : null
+  ].filter(Boolean)
+  const resolved = nodeIds.length - missing.length
+  const assetExportWarning = issues.length
+    ? `Image export incomplete: ${resolved}/${nodeIds.length} nodes resolved. ${issues.join(' ')}${failures.length > 3 ? ` (+${failures.length - 3} more failed requests)` : ''}`
+    : null
+  return { nodeImageExports, assetExportWarning }
 }
 
-function collectImageFillNodeIds(root) {
+function collectRasterAssetNodeIds(root) {
   const ids = []
-  const visit = (node, isRoot) => {
+  const visit = node => {
     if (!node || node.visible === false) return
-    // Node phức tạp (vector/icon/hình xoay) xuất nguyên cụm thành 1 ảnh — không đi vào con nữa.
-    if (!isRoot && isRasterCandidate(node)) { ids.push(node.id); return }
+    // Node mới, vector, icon hoặc hình xoay được xuất nguyên cụm thành ảnh — không đi vào con nữa.
+    if (isRasterCandidate(node)) { ids.push(node.id); return }
     const hasNoRenderableChildren = !(node.children || []).some(child => child.visible !== false)
     if (hasNoRenderableChildren && (node.fills || []).some(fill => fill?.visible !== false && fill?.type === 'IMAGE' && fill.imageRef)) ids.push(node.id)
-    for (const child of node.children || []) visit(child, false)
+    for (const child of node.children || []) visit(child)
   }
-  visit(root, true)
+  visit(root)
   return ids
 }
 
@@ -118,6 +247,10 @@ function collectImageFillNodeIds(root) {
 const VECTOR_TYPES = new Set(['VECTOR', 'BOOLEAN_OPERATION', 'STAR', 'POLYGON', 'REGULAR_POLYGON', 'LINE'])
 const SHAPE_TYPES = new Set(['ELLIPSE', 'RECTANGLE'])
 const WRAPPER_TYPES = new Set(['GROUP', 'FRAME', 'INSTANCE', 'COMPONENT'])
+export const VIEW_TYPES = new Set([
+  'FRAME', 'GROUP', 'SECTION', 'COMPONENT', 'COMPONENT_SET', 'INSTANCE', 'SLOT',
+  'RECTANGLE', 'ELLIPSE', 'VECTOR', 'BOOLEAN_OPERATION', 'STAR', 'POLYGON', 'REGULAR_POLYGON', 'LINE'
+])
 
 function visibleChildren(node) {
   return (node.children || []).filter(child => child.visible !== false)
@@ -146,38 +279,63 @@ export function isRasterCandidate(node) {
   if (!node || node.visible === false || node.type === 'TEXT') return false
   if (VECTOR_TYPES.has(node.type)) return true
   if (visibleChildren(node).length && isGraphicOnly(node) && containsVector(node)) return true
+  // Leaf type mới chưa có renderer: raster hóa để giữ hình thay vì bỏ node.
+  if (node.type && !VIEW_TYPES.has(node.type) && !['DOCUMENT', 'CANVAS'].includes(node.type) && !visibleChildren(node).length) return true
   // UIView xoay được nhưng Auto Layout tính theo khung chưa xoay → hình xoay (không chứa text) xuất ảnh cho đúng thiết kế.
   return Math.abs(Number(node.rotation) || 0) > 0.5 && !containsText(node) && !hasImagePaint(node)
 }
 
-async function figmaGet(endpoint, token) {
-  let response
-  try {
-    response = await fetch(endpoint, {
-      method: 'GET',
-      headers: { 'X-Figma-Token': token.trim() }
-    })
-  } catch (error) {
-    throw new Error(`Could not reach the Figma API from this browser. ${error?.message || ''}`.trim())
-  }
+const RETRYABLE_FIGMA_STATUSES = new Set([429, 502, 503, 504])
+const MAX_FIGMA_RETRIES = 2
 
-  if (!response.ok) {
+function retryDelay(response, attempt) {
+  const header = response?.headers?.get?.('Retry-After')
+  const retrySeconds = Number(header)
+  if (header && Number.isFinite(retrySeconds) && retrySeconds >= 0) {
+    return Math.min(5000, Math.round(retrySeconds * 1000))
+  }
+  return Math.min(2000, 300 * (2 ** attempt))
+}
+
+export async function figmaGet(endpoint, token) {
+  for (let attempt = 0; attempt <= MAX_FIGMA_RETRIES; attempt++) {
+    let response
+    try {
+      response = await fetch(endpoint, {
+        method: 'GET',
+        headers: { 'X-Figma-Token': token.trim() }
+      })
+    } catch (error) {
+      if (attempt < MAX_FIGMA_RETRIES) {
+        await new Promise(resolve => setTimeout(resolve, 300 * (2 ** attempt)))
+        continue
+      }
+      throw new Error(`Could not reach the Figma API from this browser. ${error?.message || ''}`.trim())
+    }
+
+    if (response.ok) return response.json()
+
+    if (RETRYABLE_FIGMA_STATUSES.has(response.status) && attempt < MAX_FIGMA_RETRIES) {
+      await new Promise(resolve => setTimeout(resolve, retryDelay(response, attempt)))
+      continue
+    }
+
     let detail = ''
     try {
       const body = await response.json()
       detail = body?.err || body?.message || JSON.stringify(body)
     } catch {
-      detail = await response.text()
+      try { detail = await response.text() } catch { detail = '' }
     }
 
     const suffix = detail ? ` — ${detail}` : ''
-    if (response.status === 403) throw new Error(`Figma denied access. Check token scope (file_content:read) and file permission${suffix}`)
+    if (response.status === 403) {
+      throw new Error(`Figma denied access. Check token scope (file_content:read) and file permission${suffix}`)
+    }
     if (response.status === 404) throw new Error(`Figma file/node was not found or is not visible to this token${suffix}`)
-    if (response.status === 429) throw new Error(`Figma API rate limit reached${suffix}`)
+    if (response.status === 429) throw new Error(`Figma API rate limit reached after retries${suffix}`)
     throw new Error(`Figma API returned HTTP ${response.status}${suffix}`)
   }
-
-  return response.json()
 }
 
 function extractRootNode(payload, nodeId) {

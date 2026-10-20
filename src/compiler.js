@@ -2,9 +2,13 @@ import { collectTodoItems, compileUIKit as compileCore, displayText, sanitizeOut
 import { figmaPaintToCss, firstVisiblePaint, isRasterCandidate } from './figma.js'
 import { applySwiftPreview } from './preview.js'
 import { generateSwiftUIFiles } from './swiftui.js'
+import { generateAndroidComposeFiles } from './android-compose.js'
 import { generateUIKitMVVMFiles, normalizeArchitecture } from './uikit-router.js'
 import { planColorNames, styleColorNames } from './color-registry.js'
 import { LINT_CONFIG_FILES } from './lint-config.js'
+import { discoverNativeRegions, nativePlanMarkdown, nativeSupportFiles } from './native-first.js'
+import { auditFigmaNodeCoverage, nodeCoverageMarkdown, auditExportPaths } from './node-coverage.js'
+import { generateFigmaDocuments } from './figma-documents.js'
 
 export function compileUIKit(figmaData, requestedRootClass = '', options = {}) {
   // Lượt 1 chỉ để biết mỗi màu được dùng ở đâu (UIKit + SwiftUI) → chốt tên màu; lượt 2 sinh code với tên đó.
@@ -19,6 +23,7 @@ function generateAll(figmaData, requestedRootClass, options) {
   const result = compileCore(figmaData, requestedRootClass, options)
   result.architecture = normalizeArchitecture(options.architecture)
   result.swiftUIFiles = generateSwiftUIFiles({ rootClass: result.rootClass, mainIR: result.previewRoot, componentIRs: result.componentIRs, deploymentTarget: result.deploymentTarget, colorRegistry: result.colorRegistry, architecture: result.architecture, scroll: result.scroll })
+  result.androidFiles = generateAndroidComposeFiles({ rootClass: result.rootClass, mainIR: result.previewRoot, componentIRs: result.componentIRs, scroll: result.scroll, androidNamespace: options.androidNamespace })
   return result
 }
 
@@ -27,6 +32,16 @@ function finishCompile(result, figmaData) {
   result.colors = result.colorRegistry.entries()
   result.namedColors = Object.fromEntries(result.colors.map(({ name, rgba }) => [name, rgba]))
   result.files.push(...generateUIKitMVVMFiles({ rootClass: result.rootClass, architecture: result.architecture, scroll: result.scroll }), ...LINT_CONFIG_FILES)
+  const nativeRegions = discoverNativeRegions(figmaData.root)
+  result.nativeRegions = nativeRegions
+  result.files.push(...nativeSupportFiles(nativeRegions))
+  result.files.push({
+    path: 'NATIVE_UI_PLAN.md',
+    name: 'NATIVE_UI_PLAN.md',
+    language: 'markdown',
+    content: nativePlanMarkdown(figmaData.root, nativeRegions),
+    kind: 'config'
+  })
   // Lấy TODO từ IR trước khi hydrate preview (hydrate thay style bằng dữ liệu CSS, không mang theo todos).
   result.todos = [
     { title: result.rootClass, items: collectTodoItems(result.previewRoot) },
@@ -57,7 +72,25 @@ function finishCompile(result, figmaData) {
   for (const preview of Object.values(result.componentPreviews)) if (preview) applyExportedImages(preview, exported)
 
   if (figmaData.imageFillWarning) result.warnings.push(figmaData.imageFillWarning)
+  if (figmaData.assetExportWarning) result.warnings.push(figmaData.assetExportWarning)
+  result.nodeCoverage = auditFigmaNodeCoverage(result, figmaData)
+  if (result.nodeCoverage.status === 'INCOMPLETE') {
+    result.warnings.push(`Figma node audit incomplete: ${result.nodeCoverage.missingNodeIds.length} unrepresented nodes, ${result.nodeCoverage.assetIssues.length} unresolved asset sources, ${result.nodeCoverage.imageExportWarnings.length} Figma image export warnings.`)
+  }
   bindComponentSwiftLivePreview(result)
+  result.files.push(...generateFigmaDocuments(figmaData, result))
+  result.files.push(
+    { path: 'Reports/FIGMA_NODE_COVERAGE.md', name: 'FIGMA_NODE_COVERAGE.md', language: 'markdown', content: nodeCoverageMarkdown(result.nodeCoverage), kind: 'config' },
+    { path: 'Reports/FIGMA_NODE_COVERAGE.json', name: 'FIGMA_NODE_COVERAGE.json', language: 'json', content: JSON.stringify(result.nodeCoverage, null, 2), kind: 'config' }
+  )
+  result.exportPathAudit = auditExportPaths([
+    ...result.files,
+    { path: 'README.md', name: 'README.md', kind: 'config' },
+    { path: 'UIKitForge.generated.json', name: 'UIKitForge.generated.json', kind: 'config' }
+  ], result.swiftUIFiles, result.androidFiles)
+  if (!result.exportPathAudit.ok) {
+    result.warnings.push(`Generated export paths need review: ${result.exportPathAudit.collisions.length} collisions and ${result.exportPathAudit.unsafe.length} unsafe paths.`)
+  }
   return result
 }
 
