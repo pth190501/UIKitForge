@@ -1,89 +1,139 @@
-// Deterministic structural coverage report. A represented node is not a
-// pixel-perfect result; screenshots, assets, runtime behaviour and build
-// validation remain separate release gates.
+import { internalKey } from './compiler-core.js'
+
 export function auditFigmaNodeCoverage(compiled, figmaData = {}) {
   const root = compiled?.sourceRoot || figmaData.root
   if (!root) throw new Error('Figma node coverage requires a source root')
+
   const irById = new Map()
-  const collect = (node, owner) => {
+  const indexIR = (node, owner) => {
     if (!node) return
     if (node.figmaId) irById.set(String(node.figmaId), { node, owner })
-    for (const child of node.children || []) collect(child, owner)
+    for (const child of node.children || []) indexIR(child, owner)
   }
-  collect(compiled.previewRoot, compiled.rootClass)
-  for (const component of compiled.componentIRs || []) collect(component.ir, component.className)
+  indexIR(compiled.previewRoot, compiled.rootClass)
+  for (const component of compiled.componentIRs || []) indexIR(component.ir, component.className)
+
+  const componentSourceIds = new Map((compiled.components || []).map(component => [component.className, component.sourceId]))
+  const componentKeysByClass = new Map()
+  for (const component of compiled.componentIRs || []) {
+    const sourceId = componentSourceIds.get(component.className)
+    if (!sourceId) continue
+    const keys = new Set()
+    const collectKeys = node => {
+      const key = internalKey(node.figmaId, sourceId) || String(node.figmaId || '')
+      if (key) keys.add(key)
+      for (const child of node.children || []) collectKeys(child)
+    }
+    collectKeys(component.ir)
+    componentKeysByClass.set(component.className, keys)
+  }
 
   const rows = []
   const assetIssues = []
+  const assetIssueKeys = new Set()
+  const addAssetIssue = (nodeId, issue) => {
+    const key = `${nodeId}\u0000${issue}`
+    if (assetIssueKeys.has(key)) return
+    assetIssueKeys.add(key)
+    assetIssues.push({ nodeId, issue })
+  }
   const imageMap = figmaData.imageMap || {}
   const exported = figmaData.nodeImageExports || {}
   const hasExport = id => Boolean(exported[id]?.['2x'] || exported[id]?.['3x'])
   const hasImage = ref => Boolean(imageMap[ref])
 
-  const walk = (node, parentId = null, inherited = null, depth = 0) => {
+  const walk = (node, parentId = null, inherited = null, depth = 0, isRoot = false) => {
     if (!node) return
     const id = String(node.id || '')
     const entry = irById.get(id)
     let status = 'missing'
     let via = null
     let next = inherited
+    const hidden = (!isRoot && node.visible === false) || inherited?.status === 'hidden'
+    const insideRaster = inherited?.status === 'inside-raster'
 
-    if (node.visible === false || inherited?.status === 'hidden') {
+    if (hidden) {
       status = 'hidden'
       next = { status: 'hidden', id }
-    } else if (inherited?.status === 'inside-component' || inherited?.status === 'inside-raster') {
-      status = inherited.status
+    } else if (inherited?.status === 'inside-raster') {
+      status = 'inside-raster'
       via = inherited.id
+    } else if (inherited?.status === 'inside-component') {
+      const key = internalKey(id, inherited.instanceId)
+      const represented = key && componentKeysByClass.get(inherited.componentClass)?.has(key)
+      if (represented) {
+        status = 'inside-component'
+        via = inherited.id
+        if (entry?.node.meta?.rasterized) {
+          status = 'rasterized'
+          next = { status: 'inside-raster', id }
+        } else if (entry?.node.kind === 'component') {
+          next = { status: 'inside-component', id, componentClass: entry.node.className, instanceId: id }
+        }
+      }
     } else if (entry) {
       status = 'compiled'
       via = entry.owner
-      if (entry.node.kind === 'component') {
-        next = { status: 'inside-component', id }
-      } else if (entry.node.meta?.rasterized) {
+      if (entry.node.meta?.rasterized) {
         status = 'rasterized'
         next = { status: 'inside-raster', id }
-        if (!hasExport(id)) assetIssues.push({ nodeId: id, issue: 'raster image export not resolved' })
-      }
-      const imageFill = (node.fills || []).find(fill => fill?.visible !== false && fill.type === 'IMAGE' && fill.imageRef)
-      if (imageFill && !hasImage(imageFill.imageRef) && !hasExport(id)) {
-        assetIssues.push({ nodeId: id, issue: 'image fill not resolved' })
+      } else if (entry.node.kind === 'component') {
+        next = { status: 'inside-component', id, componentClass: entry.node.className, instanceId: id }
       }
     }
+
+    if (!hidden && !insideRaster && entry?.node.meta?.rasterized && !hasExport(id)) {
+      addAssetIssue(id, 'raster image export URL not resolved')
+    }
+    if (!hidden && !insideRaster) {
+      for (const fill of (node.fills || []).filter(item => item?.visible !== false && item.type === 'IMAGE')) {
+        if (!hasImage(fill.imageRef) && !hasExport(id)) addAssetIssue(id, 'image fill URL not resolved')
+      }
+    }
+
     rows.push({ nodeId: id, parentId, depth, name: String(node.name || ''), type: String(node.type || ''), status, via })
     for (const child of node.children || []) walk(child, id, next, depth + 1)
   }
-  walk(root)
-  const statuses = ['compiled', 'rasterized', 'inside-component', 'inside-raster', 'hidden', 'missing']
-  const counts = Object.fromEntries(statuses.map(status => [status, rows.filter(row => row.status === status).length]))
-  const missing = rows.filter(row => row.status === 'missing')
+  walk(root, null, null, 0, true)
+
+  const counts = Object.fromEntries(['compiled', 'rasterized', 'inside-component', 'inside-raster', 'hidden', 'missing'].map(status => [status, 0]))
+  for (const row of rows) counts[row.status]++
+  const missingNodeIds = rows.filter(row => row.status === 'missing').map(row => row.nodeId)
+  const imageExportWarnings = figmaData.assetExportWarning ? [figmaData.assetExportWarning] : []
   return {
     schemaVersion: 1,
     rootNodeId: String(root.id || ''),
     rootClass: compiled.rootClass,
-    status: missing.length || assetIssues.length ? 'INCOMPLETE' : 'GENERATED_UNVERIFIED',
-    nativeScreenshotVerified: false,
-    pixelPerfectVerified: false,
+    status: missingNodeIds.length || assetIssues.length || imageExportWarnings.length ? 'INCOMPLETE' : 'GENERATED_UNVERIFIED',
     totalNodes: rows.length,
     counts,
-    missingNodeIds: missing.map(row => row.nodeId),
+    missingNodeIds,
     assetIssues,
+    imageExportWarnings,
+    nativeScreenshotVerified: false,
+    pixelPerfectVerified: false,
     nodes: rows
   }
 }
 
 export function nodeCoverageMarkdown(report) {
+  const markdownText = value => String(value ?? '')
+    .replace(/[\r\n]/g, ' ')
+    .replace(/[\\`*_{}\[\]()#+\-.!|<>]/g, '\\$&')
   const lines = [
     '# Figma node coverage',
     '',
-    `- Root node: \`${report.rootNodeId}\``,
-    `- Generated view: \`${report.rootClass}\``,
+    `- Root node: \`${markdownText(report.rootNodeId)}\``,
+    `- Generated view: \`${markdownText(report.rootClass)}\``,
     `- Total nodes: ${report.totalNodes}`,
-    `- Status: **${report.status}**`,
+    `- Overall status: **${report.overallStatus || report.status}**`,
+    `- Structural status: **${report.status}**`,
+    '- Binary image download results are recorded in `UIKitForge.generated.json` after ZIP export.',
     '- Native UIKit screenshot: **NOT VERIFIED**',
     '- Pixel-perfect fidelity: **NOT VERIFIED**',
     '',
     'A node may be compiled directly, represented inside a reusable component, or rasterized.',
-    'Coverage is structural accounting, not proof of visual or functional fidelity.',
+    'Structural accounting does not prove visual or functional fidelity.',
     '',
     '## Breakdown',
     ''
@@ -92,11 +142,19 @@ export function nodeCoverageMarkdown(report) {
   lines.push('', '## Missing nodes', '')
   if (!report.missingNodeIds.length) lines.push('- None detected.')
   for (const row of report.nodes.filter(node => node.status === 'missing')) {
-    lines.push(`- \`${row.nodeId}\` — ${row.name.replace(/[\r\n`]/g, ' ')} (${row.type})`)
+    lines.push(`- \`${markdownText(row.nodeId)}\` — ${markdownText(row.name)} (${markdownText(row.type)})`)
   }
-  lines.push('', '## Missing asset sources', '')
+  lines.push('', '## Unresolved asset sources', '')
   if (!report.assetIssues.length) lines.push('- None detected in the supplied Figma payload.')
-  for (const issue of report.assetIssues) lines.push(`- \`${issue.nodeId}\`: ${issue.issue}`)
+  for (const issue of report.assetIssues) lines.push(`- \`${markdownText(issue.nodeId)}\`: ${markdownText(issue.issue)}`)
+  if (report.imageExportWarnings?.length) {
+    lines.push('', '## Figma image export warnings', '')
+    for (const warning of report.imageExportWarnings) lines.push(`- ${markdownText(warning)}`)
+  }
+  if (report.binaryAssetDownloadWarnings?.length) {
+    lines.push('', '## Binary asset download warnings', '')
+    for (const warning of report.binaryAssetDownloadWarnings) lines.push(`- ${markdownText(warning)}`)
+  }
   lines.push('', '## Release gates', '',
     '- [ ] Every visible node is accounted for.',
     '- [ ] Image and vector exports are available at required scales.',
@@ -105,19 +163,17 @@ export function nodeCoverageMarkdown(report) {
     '- [ ] Real UIKit screenshots are compared against Figma at matching scale.',
     '- [ ] All differences are fixed or explicitly documented.',
     '')
-  return lines.join('\n')
+  return lines.join('\n') + '\n'
 }
 
-// Audit the real per-mode ZIP manifests: shared files and configs may collide
-// with mode-specific files even when their declared targets are different.
+// Kiểm tra đường dẫn riêng cho từng kiểu ZIP trước khi đưa file vào gói xuất.
 export function auditExportPaths(files = [], swiftUIFiles = []) {
   const collisions = []
   const unsafe = []
-  const normalize = file => String(file.path || '').replaceAll('\\', '/')
+  const pathOf = file => String(file.path || '').replaceAll('\\', '/')
   const check = file => {
-    const path = normalize(file)
-    if (!path || path.startsWith('/') || /^[A-Za-z]:/.test(path) ||
-      path.split('/').some(part => !part || part === '.' || part === '..')) {
+    const path = pathOf(file)
+    if (!path || path.startsWith('/') || /^[A-Za-z]:/.test(path) || path.split('/').some(part => !part || part === '.' || part === '..')) {
       unsafe.push({ target: file.target || 'shared', path })
     }
   }
@@ -136,7 +192,7 @@ export function auditExportPaths(files = [], swiftUIFiles = []) {
   for (const [target, manifest] of variants) {
     const seen = new Set()
     for (const file of manifest) {
-      const path = normalize(file)
+      const path = pathOf(file)
       const key = path.toLowerCase()
       if (seen.has(key)) collisions.push({ target, path })
       seen.add(key)

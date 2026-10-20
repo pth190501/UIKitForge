@@ -10,7 +10,7 @@ const root = {
     { id: '1:3', name: 'Hidden', type: 'FRAME', visible: false,
       children: [{ id: '1:4', name: 'Hidden child', type: 'TEXT' }] },
     { id: '1:5', name: 'Card instance', type: 'INSTANCE',
-      children: [{ id: '1:6', name: 'Card child', type: 'TEXT' }] },
+      children: [{ id: 'I1:5;10:6', name: 'Card child', type: 'TEXT' }] },
     { id: '1:7', name: 'Raster group', type: 'GROUP',
       children: [{ id: '1:8', name: 'Raster child', type: 'TEXT' }] },
     { id: '1:9', name: 'Unknown unsupported leaf', type: 'UNSUPPORTED' },
@@ -23,10 +23,11 @@ const compiled = {
   rootClass: 'RootView',
   sourceRoot: root,
   previewRoot: ir('1:1', 'view', {
-    children: [ir('1:2', 'label'), ir('1:5', 'component'),
+    children: [ir('1:2', 'label'), ir('1:5', 'component', { className: 'CardView' }),
       ir('1:7', 'image', { meta: { rasterized: true } }), ir('1:10', 'image')]
   }),
-  componentIRs: []
+  components: [{ className: 'CardView', sourceId: '10:5' }],
+  componentIRs: [{ className: 'CardView', ir: ir('10:5', 'view', { children: [ir('10:6', 'label')] }) }]
 }
 const report = auditFigmaNodeCoverage(compiled, {})
 assert.equal(report.totalNodes, 10)

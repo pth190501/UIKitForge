@@ -71,23 +71,24 @@ function finishCompile(result, figmaData) {
 
   if (figmaData.imageFillWarning) result.warnings.push(figmaData.imageFillWarning)
   if (figmaData.assetExportWarning) result.warnings.push(figmaData.assetExportWarning)
-
-  const coverage = auditFigmaNodeCoverage(result, figmaData)
-  result.nodeCoverage = coverage
-  result.files.push(
-    { path: 'Reports/FIGMA_NODE_COVERAGE.md', name: 'FIGMA_NODE_COVERAGE.md', language: 'markdown', content: nodeCoverageMarkdown(coverage), kind: 'config' },
-    { path: 'Reports/FIGMA_NODE_COVERAGE.json', name: 'FIGMA_NODE_COVERAGE.json', language: 'json', content: JSON.stringify(coverage, null, 2), kind: 'config' }
-  )
-  if (coverage.status === 'INCOMPLETE') {
-    result.warnings.push(`Figma node audit incomplete: ${coverage.missingNodeIds.length} unrepresented nodes, ${coverage.assetIssues.length} unresolved assets. See Reports/FIGMA_NODE_COVERAGE.md.`)
+  result.nodeCoverage = auditFigmaNodeCoverage(result, figmaData)
+  if (result.nodeCoverage.status === 'INCOMPLETE') {
+    result.warnings.push(`Figma node audit incomplete: ${result.nodeCoverage.missingNodeIds.length} unrepresented nodes, ${result.nodeCoverage.assetIssues.length} unresolved asset sources, ${result.nodeCoverage.imageExportWarnings.length} Figma image export warnings.`)
   }
-  const exportAudit = auditExportPaths(result.files, result.swiftUIFiles)
-  if (!exportAudit.ok) {
-    result.warnings.push(`Generated export paths need review: ${exportAudit.collisions.length} collisions and ${exportAudit.unsafe.length} unsafe paths.`)
-  }
-  result.exportPathAudit = exportAudit
   bindComponentSwiftLivePreview(result)
   result.files.push(...generateFigmaDocuments(figmaData, result))
+  result.files.push(
+    { path: 'Reports/FIGMA_NODE_COVERAGE.md', name: 'FIGMA_NODE_COVERAGE.md', language: 'markdown', content: nodeCoverageMarkdown(result.nodeCoverage), kind: 'config' },
+    { path: 'Reports/FIGMA_NODE_COVERAGE.json', name: 'FIGMA_NODE_COVERAGE.json', language: 'json', content: JSON.stringify(result.nodeCoverage, null, 2), kind: 'config' }
+  )
+  result.exportPathAudit = auditExportPaths([
+    ...result.files,
+    { path: 'README.md', name: 'README.md', kind: 'config' },
+    { path: 'UIKitForge.generated.json', name: 'UIKitForge.generated.json', kind: 'config' }
+  ], result.swiftUIFiles)
+  if (!result.exportPathAudit.ok) {
+    result.warnings.push(`Generated export paths need review: ${result.exportPathAudit.collisions.length} collisions and ${result.exportPathAudit.unsafe.length} unsafe paths.`)
+  }
   return result
 }
 

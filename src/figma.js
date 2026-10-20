@@ -10,14 +10,21 @@ export function parseFigmaUrl(rawUrl) {
     throw new Error('Invalid Figma URL.')
   }
 
-  if (!/figma\.com$/i.test(url.hostname) && !/\.figma\.com$/i.test(url.hostname)) {
+  const hostname = url.hostname.toLowerCase()
+  if (url.protocol !== 'https:') throw new Error('Figma URLs must use HTTPS.')
+  if (hostname !== 'figma.com' && !hostname.endsWith('.figma.com')) {
     throw new Error('This is not a figma.com URL.')
   }
 
-  const pathMatch = url.pathname.match(/\/(?:design|file|proto)\/([^/]+)/i)
-  if (!pathMatch) throw new Error('Could not find the Figma file key in this URL.')
-
-  const fileKey = pathMatch[1]
+  const path = url.pathname.split('/').filter(Boolean)
+  let fileKey
+  if (path[0]?.toLowerCase() === 'community') {
+    if (path[1]?.toLowerCase() !== 'file') throw new Error('This Figma community link does not point to a file.')
+    fileKey = path[2]
+  } else if (path[0]?.toLowerCase() !== 'files') {
+    fileKey = path[1]
+  }
+  if (!fileKey) throw new Error('Could not find a Figma file key in this URL.')
   const rawNodeId = url.searchParams.get('node-id')
   const nodeId = rawNodeId ? normalizeNodeId(rawNodeId) : null
 
@@ -31,17 +38,44 @@ export function normalizeNodeId(nodeId) {
   return decoded.replace(/-/g, ':')
 }
 
-export async function fetchFigmaSelection({ figmaUrl, token }) {
+export async function fetchFigmaSelection({ figmaUrl, token, nodeId: requestedNodeId = null }) {
   if (!token?.trim()) throw new Error('Please enter a Figma Personal Access Token.')
 
   const parsed = parseFigmaUrl(figmaUrl)
-  const endpoint = parsed.nodeId
-    ? `${FIGMA_API}/files/${encodeURIComponent(parsed.fileKey)}/nodes?ids=${encodeURIComponent(parsed.nodeId)}`
-    : `${FIGMA_API}/files/${encodeURIComponent(parsed.fileKey)}?depth=8`
+  const nodeId = requestedNodeId ? normalizeNodeId(requestedNodeId) : parsed.nodeId
+  const indexOnly = !nodeId
+  // Dùng depth nông để chọn mục tiêu; tải node đã chọn không giới hạn chiều sâu theo API.
+  // Nguồn: https://developers.figma.com/docs/rest-api/file-endpoints/
+  const endpoint = nodeId
+    ? `${FIGMA_API}/files/${encodeURIComponent(parsed.fileKey)}/nodes?ids=${encodeURIComponent(nodeId)}`
+    : `${FIGMA_API}/files/${encodeURIComponent(parsed.fileKey)}?depth=3`
 
   const payload = await figmaGet(endpoint, token)
-  const root = extractRootNode(payload, parsed.nodeId)
+  const root = extractRootNode(payload, nodeId)
   if (!root) throw new Error('Figma returned data, but UIKitForge could not find the requested node.')
+
+  const nodeEntries = Object.values(payload.nodes || {}).filter(Boolean)
+  const selection = {
+    source: { ...parsed, nodeId },
+    name: payload.name || root.name || 'Figma Selection',
+    root,
+    components: Object.assign({}, payload.components, ...nodeEntries.map(entry => entry.components || {})),
+    componentSets: Object.assign({}, payload.componentSets, ...nodeEntries.map(entry => entry.componentSets || {})),
+    // /nodes trả styles trong từng node; /files trả styles ở cấp response.
+    styles: Object.assign({}, payload.styles, ...nodeEntries.map(entry => entry.styles || {})),
+    raw: payload,
+    indexOnly
+  }
+
+  if (indexOnly) {
+    return {
+      ...selection,
+      imageMap: {},
+      imageFillWarning: null,
+      nodeImageExports: {},
+      assetExportWarning: null
+    }
+  }
 
   const imageRefs = collectImageRefs(root)
   let imageMap = {}
@@ -60,28 +94,17 @@ export async function fetchFigmaSelection({ figmaUrl, token }) {
   const { nodeImageExports, assetExportWarning } = await fetchNodeImageExports(parsed.fileKey, root, token)
 
   return {
-    source: parsed,
-    name: payload.name || root.name || 'Figma Selection',
-    root,
-    components: payload.components || {},
-    componentSets: payload.componentSets || {},
-    // Endpoint /nodes trả styles theo từng node (nodes[id].styles), endpoint /files trả ở gốc — gộp cả hai.
-    styles: Object.assign({}, payload.styles, ...Object.values(payload.nodes || {}).map(entry => entry?.styles || {})),
+    ...selection,
     imageMap,
     imageFillWarning,
     nodeImageExports,
-    assetExportWarning,
-    raw: payload
+    assetExportWarning
   }
 }
 
-// Render PNG @2x/@3x cho từng node có IMAGE fill trực tiếp (không có con) — đây là đúng những node
-// compiler phân loại kind:'image' (xem hasImageFill trong compiler-core.js). Khớp theo Figma node id;
-// main.js sẽ nối id này với outlet sau khi compile để đặt tên file trong Assets.xcassets.
-// Figma limits long image-export URLs. Large pages may contain hundreds of icons;
-// split node IDs into bounded requests and keep assets from successful batches.
+// Chia node ID thành nhóm có giới hạn cho endpoint export ảnh Figma.
 export function batchFigmaNodeIds(ids, batchSize = 20) {
-  const unique = [...new Set(ids.filter(Boolean))]
+  const unique = [...new Set((ids || []).filter(Boolean))]
   const size = Number.isInteger(batchSize) && batchSize > 0 ? batchSize : 20
   const batches = []
   for (let index = 0; index < unique.length; index += size) batches.push(unique.slice(index, index + size))
@@ -89,15 +112,14 @@ export function batchFigmaNodeIds(ids, batchSize = 20) {
 }
 
 export async function fetchNodeImageExports(fileKey, root, token) {
-  const nodeIds = collectImageFillNodeIds(root)
+  const nodeIds = [...new Set(collectRasterAssetNodeIds(root).filter(Boolean))]
   if (!nodeIds.length) return { nodeImageExports: {}, assetExportWarning: null }
 
   const nodeImageExports = {}
   const failures = []
   const batches = batchFigmaNodeIds(nodeIds)
 
-  // Two batches in flight at most. Each requests 2x and 3x independently,
-  // so failure at one resolution never discards the other.
+  // Hai batch cùng lúc; mỗi batch giữ kết quả thành công riêng ở cả hai scale.
   async function processBatch(batch, batchIndex) {
     const results = await Promise.allSettled([2, 3].map(scale =>
       figmaGet(`${FIGMA_API}/images/${encodeURIComponent(fileKey)}?ids=${encodeURIComponent(batch.join(','))}&scale=${scale}&format=png`, token)
@@ -106,41 +128,48 @@ export async function fetchNodeImageExports(fileKey, root, token) {
       const result = results[index]
       const scale = index === 0 ? '2x' : '3x'
       if (result.status === 'rejected') {
-        failures.push(`Batch ${batchIndex + 1}/${batches.length} @${scale}: ${result.reason?.message || 'unknown error'}`)
+        failures.push(`Batch ${batchIndex + 1}/${batches.length} @${scale} request failed: ${result.reason?.message || 'unknown error'}`)
         continue
       }
       for (const id of batch) {
         const url = result.value?.images?.[id]
-        if (url) {
-          if (!nodeImageExports[id]) nodeImageExports[id] = { '2x': null, '3x': null }
-          nodeImageExports[id][scale] = url
-        }
+        if (!url) continue
+        if (!nodeImageExports[id]) nodeImageExports[id] = { '2x': null, '3x': null }
+        nodeImageExports[id][scale] = url
       }
     }
   }
 
+  // Giới hạn request song song để file nhiều vector không tạo URL ảnh quá dài hoặc dồn tải vào Figma.
   for (let index = 0; index < batches.length; index += 2) {
     await Promise.all(batches.slice(index, index + 2).map((batch, offset) => processBatch(batch, index + offset)))
   }
 
   const missing = nodeIds.filter(id => !nodeImageExports[id])
-  const warning = failures.length || missing.length
-    ? `Image export incomplete: ${Object.keys(nodeImageExports).length}/${nodeIds.length} nodes resolved. ${failures.slice(0, 3).join(' | ')}${failures.length > 3 ? ` (+${failures.length - 3} more errors)` : ''}`
+  const partial = nodeIds.filter(id => nodeImageExports[id] && (!nodeImageExports[id]['2x'] || !nodeImageExports[id]['3x']))
+  const issues = [
+    ...failures.slice(0, 3),
+    missing.length ? `${missing.length} node(s) have no render URL.` : null,
+    partial.length ? `${partial.length} node(s) have only one export scale.` : null
+  ].filter(Boolean)
+  const resolved = nodeIds.length - missing.length
+  const assetExportWarning = issues.length
+    ? `Image export incomplete: ${resolved}/${nodeIds.length} nodes resolved. ${issues.join(' ')}${failures.length > 3 ? ` (+${failures.length - 3} more failed requests)` : ''}`
     : null
-  return { nodeImageExports, assetExportWarning: warning }
+  return { nodeImageExports, assetExportWarning }
 }
 
-function collectImageFillNodeIds(root) {
+function collectRasterAssetNodeIds(root) {
   const ids = []
-  const visit = (node, isRoot) => {
+  const visit = node => {
     if (!node || node.visible === false) return
-    // Node phức tạp (vector/icon/hình xoay) xuất nguyên cụm thành 1 ảnh — không đi vào con nữa.
-    if (!isRoot && isRasterCandidate(node)) { ids.push(node.id); return }
+    // Node mới, vector, icon hoặc hình xoay được xuất nguyên cụm thành ảnh — không đi vào con nữa.
+    if (isRasterCandidate(node)) { ids.push(node.id); return }
     const hasNoRenderableChildren = !(node.children || []).some(child => child.visible !== false)
     if (hasNoRenderableChildren && (node.fills || []).some(fill => fill?.visible !== false && fill?.type === 'IMAGE' && fill.imageRef)) ids.push(node.id)
-    for (const child of node.children || []) visit(child, false)
+    for (const child of node.children || []) visit(child)
   }
-  visit(root, true)
+  visit(root)
   return ids
 }
 
@@ -148,6 +177,10 @@ function collectImageFillNodeIds(root) {
 const VECTOR_TYPES = new Set(['VECTOR', 'BOOLEAN_OPERATION', 'STAR', 'POLYGON', 'REGULAR_POLYGON', 'LINE'])
 const SHAPE_TYPES = new Set(['ELLIPSE', 'RECTANGLE'])
 const WRAPPER_TYPES = new Set(['GROUP', 'FRAME', 'INSTANCE', 'COMPONENT'])
+export const VIEW_TYPES = new Set([
+  'FRAME', 'GROUP', 'SECTION', 'COMPONENT', 'COMPONENT_SET', 'INSTANCE', 'SLOT',
+  'RECTANGLE', 'ELLIPSE', 'VECTOR', 'BOOLEAN_OPERATION', 'STAR', 'POLYGON', 'REGULAR_POLYGON', 'LINE'
+])
 
 function visibleChildren(node) {
   return (node.children || []).filter(child => child.visible !== false)
@@ -176,6 +209,8 @@ export function isRasterCandidate(node) {
   if (!node || node.visible === false || node.type === 'TEXT') return false
   if (VECTOR_TYPES.has(node.type)) return true
   if (visibleChildren(node).length && isGraphicOnly(node) && containsVector(node)) return true
+  // Leaf type mới chưa có renderer: raster hóa để giữ hình thay vì bỏ node.
+  if (node.type && !VIEW_TYPES.has(node.type) && !['DOCUMENT', 'CANVAS'].includes(node.type) && !visibleChildren(node).length) return true
   // UIView xoay được nhưng Auto Layout tính theo khung chưa xoay → hình xoay (không chứa text) xuất ảnh cho đúng thiết kế.
   return Math.abs(Number(node.rotation) || 0) > 0.5 && !containsText(node) && !hasImagePaint(node)
 }

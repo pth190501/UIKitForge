@@ -7,6 +7,7 @@ import { analyzeScreenshot } from './screenshot.js'
 import { applySwiftPreview, describeNode, measurePreviewLayout, rasterizePreviewToCanvas, renderUIKitPreview, walkPreview } from './preview.js'
 import { diffImageData, diffSeverity } from './pixel-diff.js'
 import { rerootSharedMVVMFile } from './export-layout.js'
+import { nodeCoverageMarkdown } from './node-coverage.js'
 
 const STORAGE_KEY = 'uikitforge.figmaToken'
 const ARCHITECTURE_LABELS = { 'mvvm-r': 'MVVM-R', mvvm: 'MVVM', mvc: 'MVC', viper: 'VIPER' }
@@ -14,6 +15,7 @@ const SESSION_KEY = 'uikitforge.figmaToken.session'
 
 const state = {
   figmaData: null,
+  pendingFigmaSelection: null,
   compiled: null,
   selectedFileIndex: -1,
   selectedNodeId: null,
@@ -69,8 +71,15 @@ app.innerHTML = `
           <div class="drop-copy"><strong>Drop screenshot here</strong><span id="screenshotName">PNG / JPG / WEBP</span></div>
         </div>
         <div class="field figma-url-field">
-          <label for="figmaUrl">Figma node URL <span>optional if screenshot is provided</span></label>
-          <input id="figmaUrl" type="url" placeholder="https://www.figma.com/design/...?...node-id=..." autocomplete="off" />
+          <label for="figmaUrl">Figma URL <span>choose a target if the link has no node ID</span></label>
+          <input id="figmaUrl" type="url" placeholder="https://www.figma.com/design/..." autocomplete="off" />
+          <div class="field figma-root-picker" id="figmaRootPicker" hidden>
+          <label for="figmaRootSelect">Figma target <span>choose the screen, component or layer to generate</span></label>
+            <select id="figmaRootSelect" aria-describedby="figmaRootHelp">
+              <option value="">Choose a screen or layer…</option>
+            </select>
+            <small id="figmaRootHelp">The selected node becomes the root of the generated module.</small>
+          </div>
         </div>
         <div class="field token-field">
           <label for="figmaToken">Figma token <span>only for Figma modes</span></label>
@@ -181,7 +190,7 @@ app.innerHTML = `
 `
 
 const refs = Object.fromEntries([
-  'figmaUrl', 'rootClass', 'outputTarget', 'architecture', 'deploymentTarget', 'figmaToken', 'toggleToken', 'forgetToken', 'rememberToken', 'screenshotImage', 'screenshotDrop', 'screenshotName',
+  'figmaUrl', 'figmaRootPicker', 'figmaRootSelect', 'rootClass', 'outputTarget', 'architecture', 'deploymentTarget', 'figmaToken', 'toggleToken', 'forgetToken', 'rememberToken', 'screenshotImage', 'screenshotDrop', 'screenshotName',
   'generateButton', 'demoButton', 'downloadFileButton', 'downloadAllButton', 'statusText', 'statusMetrics', 'statusProgress',
   'statusStrip', 'workspace', 'fileCount', 'filesList', 'editorLanguage', 'editorFilename', 'codeEditor', 'editorFooter',
   'previewPanel', 'previewCanvas', 'previewTitle', 'previewSize', 'overlayRange', 'overlayValue', 'diffMatchValue', 'inspector', 'layersPanel',
@@ -199,8 +208,19 @@ function wireEvents() {
   wireSegmented(refs.architecture, value => { state.architecture = value; recompileCurrent() })
   refs.deploymentTarget.addEventListener('change', recompileCurrent)
   refs.demoButton.addEventListener('click', loadDemo)
-  refs.figmaUrl.addEventListener('input', updateInputMode)
-  refs.figmaToken.addEventListener('input', persistToken)
+  refs.figmaUrl.addEventListener('input', () => {
+    const hadPendingSelection = Boolean(state.pendingFigmaSelection)
+    resetFigmaRootPicker()
+    updateInputMode()
+    if (hadPendingSelection) setStatus('Figma URL changed. Generate to load the new design.', 'idle')
+  })
+  refs.figmaRootSelect.addEventListener('change', updateFigmaRootSelectionStatus)
+  refs.figmaToken.addEventListener('input', () => {
+    const hadPendingSelection = Boolean(state.pendingFigmaSelection)
+    resetFigmaRootPicker()
+    persistToken()
+    if (hadPendingSelection) setStatus('Figma token changed. Generate to reload the design.', 'idle')
+  })
   refs.rememberToken.addEventListener('change', persistToken)
 
   refs.screenshotImage.addEventListener('change', event => setScreenshot(event.target.files?.[0] || null))
@@ -218,13 +238,14 @@ function wireEvents() {
 
   refs.toggleToken.addEventListener('click', () => { refs.figmaToken.type = refs.figmaToken.type === 'password' ? 'text' : 'password' })
   refs.forgetToken.addEventListener('click', () => {
-    localStorage.removeItem(STORAGE_KEY); sessionStorage.removeItem(SESSION_KEY); refs.figmaToken.value = ''; refs.rememberToken.checked = false; updateInputMode(); setStatus('Figma token removed from this browser.', 'idle')
+    localStorage.removeItem(STORAGE_KEY); sessionStorage.removeItem(SESSION_KEY); refs.figmaToken.value = ''; refs.rememberToken.checked = false; resetFigmaRootPicker(); updateInputMode(); setStatus('Figma token removed from this browser.', 'idle')
   })
 
   refs.overlayRange.addEventListener('input', () => { state.overlayOpacity = Number(refs.overlayRange.value) / 100; refs.overlayValue.textContent = `${refs.overlayRange.value}%`; renderPreview() })
   refs.codeEditor.addEventListener('input', () => {
     const file = currentFile(); if (!file) return
     file.content = refs.codeEditor.value
+    if (file.sourceFile) file.sourceFile.content = file.content
     if (file.language === 'swift') renderPreview()
     updateEditorFooter(file)
   })
@@ -277,12 +298,100 @@ function updateInputMode() {
   refs.figmaToken.closest('.field').classList.toggle('dimmed', state.inputMode === 'image' || state.inputMode === 'idle')
 }
 
+function resetFigmaRootPicker() {
+  state.pendingFigmaSelection = null
+  refs.figmaRootPicker.hidden = true
+  refs.figmaRootSelect.replaceChildren()
+}
+
+function updateFigmaRootSelectionStatus() {
+  const selected = state.pendingFigmaSelection?.candidates.find(candidate => candidate.nodeId === refs.figmaRootSelect.value)
+  setStatus(selected ? 'Target selected. Press Generate to build this module.' : 'Choose a Figma target to continue.', 'idle', selected ? [selected.nodeId] : [])
+}
+
+function collectFigmaRootCandidates(root) {
+  const candidates = []
+  const seen = new Set()
+  const add = (node, parents = []) => {
+    const nodeId = String(node?.id || '')
+    if (!nodeId || seen.has(nodeId)) return
+    seen.add(nodeId)
+    candidates.push({ node, nodeId, type: node.type || 'NODE', label: [...parents, node.name || node.type || 'Untitled'].join(' › ') })
+  }
+
+  const addVariants = (componentSet, parents) => {
+    const setPath = [...parents, componentSet.name || 'Component set']
+    for (const variant of componentSet.children || []) {
+      if (variant.visible !== false && variant.type === 'COMPONENT') add(variant, setPath)
+    }
+  }
+
+  const visitNested = (node, parents) => {
+    if (!node || node.visible === false) return
+    if (node.type === 'COMPONENT_SET') {
+      addVariants(node, parents)
+      return
+    }
+    if (['FRAME', 'COMPONENT', 'INSTANCE'].includes(node.type)) {
+      add(node, parents)
+      return
+    }
+    const path = [...parents, node.name || node.type || 'Untitled']
+    if (['GROUP', 'SECTION'].includes(node.type)) add(node, parents)
+    for (const child of node.children || []) visitNested(child, path)
+  }
+
+  const visitPage = page => {
+    const pageName = page.name || 'Untitled page'
+    for (const child of page.children || []) {
+      if (child.visible === false) continue
+      if (child.type === 'COMPONENT_SET') addVariants(child, [pageName])
+      else {
+        add(child, [pageName])
+        visitNested(child, [pageName, child.name || child.type || 'Untitled'])
+      }
+    }
+  }
+
+  if (root?.type === 'DOCUMENT') {
+    for (const page of root.children || []) if (page.type === 'CANVAS' && page.visible !== false) visitPage(page)
+  } else if (root?.type === 'CANVAS') {
+    visitPage(root)
+  } else if (root?.type === 'COMPONENT_SET') {
+    addVariants(root, [])
+  } else if (root) {
+    add(root)
+  }
+  return candidates
+}
+
+function showFigmaRootPicker(candidates) {
+  const select = refs.figmaRootSelect
+  select.replaceChildren()
+  const placeholder = document.createElement('option')
+  placeholder.value = ''
+  placeholder.textContent = 'Choose a screen or layer…'
+  select.appendChild(placeholder)
+  for (const candidate of candidates) {
+    const option = document.createElement('option')
+    option.value = candidate.nodeId
+    option.textContent = `${candidate.label} · ${candidate.type} · ${candidate.nodeId}`
+    select.appendChild(option)
+  }
+  refs.figmaRootPicker.hidden = false
+  select.focus()
+}
+
+function requiresFigmaRootSelection(parsedUrl, figmaData) {
+  return !parsedUrl.nodeId || ['DOCUMENT', 'CANVAS', 'COMPONENT_SET'].includes(figmaData.root?.type)
+}
+
 async function generateUIKit() {
   if (state.generating) return
   updateInputMode()
   const mode = state.inputMode
   const rootClass = refs.rootClass.value.trim() || 'GeneratedView'
-  if (mode === 'idle') { setStatus('Add a screenshot or paste a Figma node URL first.', 'error'); return }
+  if (mode === 'idle') { setStatus('Add a screenshot or paste a Figma URL first.', 'error'); return }
 
   state.generating = true
   refs.generateButton.disabled = true
@@ -298,14 +407,44 @@ async function generateUIKit() {
       setStatus('Screenshot understood. Compiling inferred UIKit tree…', 'loading')
     } else {
       const figmaUrl = refs.figmaUrl.value.trim()
+      const parsedUrl = parseFigmaUrl(figmaUrl)
       const token = refs.figmaToken.value.trim()
-      parseFigmaUrl(figmaUrl)
       if (!token) throw new Error('Figma mode requires a Personal Access Token. Image-only mode does not.')
       persistToken()
-      setStatus('Reading Figma hierarchy, styles and image fills…', 'loading')
-      showProgress(0.2)
-      figmaData = await fetchFigmaSelection({ figmaUrl, token })
-      showProgress(0.58)
+      const pending = state.pendingFigmaSelection?.url === parsedUrl.url ? state.pendingFigmaSelection : null
+      if (pending) {
+        const selected = pending.candidates.find(candidate => candidate.nodeId === refs.figmaRootSelect.value)
+        if (!selected) throw new Error('Choose a Figma target before generating.')
+        if (pending.figmaData.indexOnly) {
+          setStatus('Loading the full selected Figma target…', 'loading')
+          showProgress(0.65)
+          figmaData = await fetchFigmaSelection({ figmaUrl, token, nodeId: selected.nodeId })
+          showProgress(0.82)
+        } else {
+          figmaData = {
+            ...pending.figmaData,
+            root: selected.node,
+            source: { ...pending.figmaData.source, nodeId: selected.nodeId }
+          }
+          setStatus('Compiling the selected Figma target…', 'loading')
+          showProgress(0.65)
+        }
+      } else {
+        resetFigmaRootPicker()
+        setStatus('Reading Figma hierarchy, styles and image fills…', 'loading')
+        showProgress(0.2)
+        figmaData = await fetchFigmaSelection({ figmaUrl, token })
+        showProgress(0.58)
+        if (requiresFigmaRootSelection(parsedUrl, figmaData)) {
+          const candidates = collectFigmaRootCandidates(figmaData.root)
+          if (!candidates.length) throw new Error('No visible frames or components were found in this Figma selection.')
+          state.pendingFigmaSelection = { url: parsedUrl.url, figmaData, candidates }
+          showFigmaRootPicker(candidates)
+          showProgress(1)
+          setStatus('Choose a Figma target, then press Generate.', 'idle', [`${candidates.length} targets`])
+          return
+        }
+      }
     }
 
     const compiled = compileFigmaData(figmaData, rootClass)
@@ -342,7 +481,6 @@ function compileFigmaData(figmaData, rootClass) {
   compiled.warnings = [...new Set(compiled.warnings)]
   compiled.assets = figmaData.assets || []
   compiled.imageAssetRefs = collectImageAssetRefs(compiled)
-  if (figmaData.assetExportWarning) compiled.warnings.push(figmaData.assetExportWarning)
   compiled.readme = generateReadme(compiled)
   return compiled
 }
@@ -429,7 +567,8 @@ function previewDisplayName(file, root) { return file?.kind === 'component' ? fi
 
 function updateEditorFooter(file) {
   if (file.language === 'swift') { refs.editorFooter.innerHTML = `<span class="footer-live-dot"></span><strong>Live:</strong> UIKit colors, text, fonts, visibility, border and corner radius update in Preview as you type.`; refs.editorFooter.classList.add('live') }
-  else { refs.editorFooter.textContent = 'XIB is editable and export-ready. Image-only structure is inferred from pixels, so validate semantics before production use.'; refs.editorFooter.classList.remove('live') }
+  else if (file.language === 'xml') { refs.editorFooter.textContent = 'XIB is editable and export-ready. Image-only structure is inferred from pixels, so validate semantics before production use.'; refs.editorFooter.classList.remove('live') }
+  else { refs.editorFooter.textContent = 'Generated report or config file. Included in the export ZIP.'; refs.editorFooter.classList.remove('live') }
 }
 
 function renderPreview() {
@@ -529,11 +668,44 @@ async function downloadAllFiles() {
   const zip = new JSZip()
   for (const file of visibleFiles()) zip.file(file.path, file.content)
   for (const asset of state.compiled.assets || []) addImageAsset(zip, asset)
-  await addFigmaImageAssets(zip, state.compiled.imageAssetRefs || [], state.figmaData?.nodeImageExports, state.figmaData?.imageMap)
+  const assetWarnings = await addFigmaImageAssets(
+    zip,
+    state.compiled.imageAssetRefs || [],
+    state.figmaData?.nodeImageExports,
+    state.figmaData?.imageMap
+  )
+  const hasPathIssues = state.compiled.exportPathAudit?.ok === false
+  const nodeCoverage = state.compiled.nodeCoverage
+    ? {
+        ...state.compiled.nodeCoverage,
+        binaryAssetDownloadStatus: assetWarnings.length ? 'INCOMPLETE' : 'COMPLETE',
+        binaryAssetDownloadWarnings: assetWarnings,
+        overallStatus: state.compiled.nodeCoverage.status === 'INCOMPLETE' || assetWarnings.length || hasPathIssues
+          ? 'INCOMPLETE' : 'GENERATED_UNVERIFIED'
+      }
+    : null
+  if (nodeCoverage) {
+    zip.file('Reports/FIGMA_NODE_COVERAGE.json', JSON.stringify(nodeCoverage, null, 2))
+    zip.file('Reports/FIGMA_NODE_COVERAGE.md', nodeCoverageMarkdown(nodeCoverage))
+  }
   addColorAssets(zip, state.compiled.colors || [])
   if (state.referenceImage) zip.file('References/source-screenshot.png', dataUrlPayload(state.referenceImage), { base64: true })
-  zip.file('UIKitForge.generated.json', JSON.stringify({ rootClass: state.compiled.rootClass, components: state.compiled.components, warnings: state.compiled.warnings, source: state.figmaData?.source || null, assets: (state.compiled.assets || []).map(({ dataUrl, ...meta }) => meta) }, null, 2))
-  const blob = await zip.generateAsync({ type: 'blob' }); downloadBlob(blob, `${state.compiled.rootClass}-UIKitForge.zip`)
+  const warnings = [...state.compiled.warnings, ...assetWarnings]
+  const nodeCoverageStatus = state.compiled.nodeCoverage?.status === 'INCOMPLETE' || assetWarnings.length || hasPathIssues
+    ? 'INCOMPLETE' : state.compiled.nodeCoverage?.status || null
+  zip.file('UIKitForge.generated.json', JSON.stringify({
+    rootClass: state.compiled.rootClass,
+    components: state.compiled.components,
+    warnings,
+    assetDownloadWarnings: assetWarnings,
+    nodeCoverageStatus,
+    exportPathAudit: state.compiled.exportPathAudit || null,
+    source: state.figmaData?.source || null,
+    assets: (state.compiled.assets || []).map(({ dataUrl, ...meta }) => meta)
+  }, null, 2))
+  const blob = await zip.generateAsync({ type: 'blob' })
+  downloadBlob(blob, `${state.compiled.rootClass}-UIKitForge.zip`)
+  setStatus(assetWarnings.length ? `ZIP downloaded with ${assetWarnings.length} image asset warning(s).` : 'ZIP downloaded successfully.', assetWarnings.length ? 'error' : 'success', assetWarnings.slice(0, 2))
 }
 
 // Colors.xcassets: mỗi màu UIColor(named:)/Color(named:) trong code trỏ tới 1 color set ở đây.
@@ -620,8 +792,9 @@ Generated by UIKitForge · deployment target: iOS ${compiled.deploymentTarget}+ 
   set those explicitly in Figma for predictable results.
   Note: Figma's "wrap" Auto Layout has no UIStackView equivalent — wrapped content still compiles
   to a single line (see compiler warnings).
-  Vector layers (VECTOR/BOOLEAN_OPERATION) are not exported as image assets yet — they compile to a
-  plain UIView placeholder.
+  Complex vector artwork and unsupported leaf types are rasterized from Figma into image assets when
+  Figma can render them; the structural coverage report flags missing renders. Rasterized content is
+  visual-only and is not editable as native vector paths.
 - **Text auto-resize → numberOfLines.** "Auto height" / "Auto width & height" text layers compile
   with \`numberOfLines = 0\`; fixed-size text layers get \`numberOfLines = 1\`.
 - **Font family.** A non-default font family on a text layer is honored via
@@ -650,16 +823,20 @@ function collectImageAssetRefs(compiled) {
 // Assets.xcassets/<outlet>.imageset — chỉ lúc tải zip, không tải trước lúc compile.
 async function addFigmaImageAssets(zip, refs, nodeImageExports, imageMap = {}) {
   const seen = new Set()
+  const warnings = []
   for (const { outlet, figmaId, imageRef } of refs) {
     if (!outlet || seen.has(outlet)) continue
     if (imageRef) {
       seen.add(outlet)
-      await addOriginalImageAsset(zip, outlet, imageMap[imageRef])
+      const warning = await addOriginalImageAsset(zip, outlet, imageMap[imageRef])
+      if (warning) warnings.push(warning)
       continue
     }
-    if (!nodeImageExports) continue
-    const urls = nodeImageExports[figmaId]
-    if (!urls || (!urls['2x'] && !urls['3x'])) continue
+    const urls = nodeImageExports?.[figmaId]
+    if (!urls || (!urls['2x'] && !urls['3x'])) {
+      warnings.push(`${outlet}: Figma image export URL is unavailable.`)
+      continue
+    }
     seen.add(outlet)
     const folder = `Assets.xcassets/${outlet}.imageset`
     const images = []
@@ -667,26 +844,40 @@ async function addFigmaImageAssets(zip, refs, nodeImageExports, imageMap = {}) {
       const url = urls[scale]
       if (!url) continue
       try {
-        const blob = await fetch(url).then(response => response.blob())
+        const response = await fetch(url)
+        if (!response.ok) {
+          warnings.push(`${outlet}@${scale}: HTTP ${response.status}.`)
+          continue
+        }
+        const blob = await response.blob()
+        if (!blob.type.startsWith('image/')) {
+          warnings.push(`${outlet}@${scale}: response was not an image.`)
+          continue
+        }
         const filename = `${outlet}@${scale}.png`
         zip.file(`${folder}/${filename}`, blob)
         images.push({ idiom: 'universal', filename, scale })
-      } catch { /* bỏ qua scale này nếu URL hết hạn/mạng lỗi, các scale khác vẫn export */ }
+      } catch { warnings.push(`${outlet}@${scale}: image request failed.`) }
     }
     if (images.length) zip.file(`${folder}/Contents.json`, JSON.stringify({ images, info: { author: 'UIKitForge', version: 1 } }, null, 2))
   }
+  return warnings
 }
 
 // Ảnh gốc của image fill chỉ có một độ phân giải → imageset single-scale; đuôi file theo MIME (Figma giữ JPEG/PNG gốc).
 async function addOriginalImageAsset(zip, outlet, url) {
-  if (!url) return
+  if (!url) return `${outlet}: Figma image URL is unavailable.`
   try {
-    const blob = await fetch(url).then(response => response.blob())
+    const response = await fetch(url)
+    if (!response.ok) return `${outlet}: HTTP ${response.status}.`
+    const blob = await response.blob()
+    if (!blob.type.startsWith('image/')) return `${outlet}: response was not an image.`
     const filename = `${outlet}.${blob.type === 'image/jpeg' ? 'jpg' : 'png'}`
     const folder = `Assets.xcassets/${outlet}.imageset`
     zip.file(`${folder}/${filename}`, blob)
     zip.file(`${folder}/Contents.json`, JSON.stringify({ images: [{ idiom: 'universal', filename }], info: { author: 'UIKitForge', version: 1 } }, null, 2))
-  } catch { /* URL ảnh hết hạn/mạng lỗi: bỏ qua asset này, code vẫn build (UIImage(named:) trả nil) */ }
+    return null
+  } catch { return `${outlet}: image request failed.` }
 }
 
 function downloadSelectedFile() { const file = currentFile(); if (!file) return; downloadBlob(new Blob([file.content], { type: 'text/plain;charset=utf-8' }), file.name) }
@@ -698,6 +889,7 @@ function hideProgress() { refs.statusProgress.hidden = true; refs.statusProgress
 function setOverlay(percent) { refs.overlayRange.value = String(percent); refs.overlayValue.textContent = `${percent}%`; state.overlayOpacity = percent / 100 }
 
 function loadDemo() {
+  resetFigmaRootPicker()
   const figmaData = createDemoFigmaData(); const compiled = compileFigmaData(figmaData, 'V5FastDataCardView')
   state.figmaData = figmaData; state.compiled = compiled; state.selectedNodeId = null; state.zoom = 'fit'; refs.rootClass.value = compiled.rootClass; renderWorkspace()
   setStatus('Demo loaded. Image-only mode is ready too.', 'success', [`${summarizeFigmaTree(figmaData.root).nodes} layers`, `${compiled.files.length} files`, 'Live preview'])

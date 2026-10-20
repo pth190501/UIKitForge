@@ -6,8 +6,8 @@ UIKitForge is an experimental web IDE that reads a Figma node using a user-provi
 
 ## MVP features
 
-- Paste a Figma `design`, `file`, or `proto` URL.
-- Supports node-specific URLs using `node-id`.
+- Paste a Figma file URL (`/:file_type/:file_key/:file_name`) or a `community/file` URL.
+- A file/page URL or component-set link shows a target picker; UIKitForge fetches the selected node's full subtree before compiling. Node-specific links to a renderable layer compile directly.
 - User supplies their own Figma Personal Access Token.
 - Token is kept in browser session storage by default.
 - Optional **Remember on this device** stores the token in local storage.
@@ -36,6 +36,7 @@ UIKitForge is an experimental web IDE that reads a Figma node using a user-provi
 - Quantitative pixel-diff match % between the rasterized preview and the reference image (see [Pixel-diff comparison](#pixel-diff-comparison)).
 - Click any preview node to inspect frame, style and inferred constraints.
 - Download the selected file or export all generated source as a ZIP, including a generated `Colors.xcassets`.
+- ZIP exports include a structural Figma node-coverage report; per-output path-audit results and binary image-download warnings are recorded in `UIKitForge.generated.json`.
 - Built-in demo so the editor/preview can be tested without a Figma token.
 - Output picker (UIKit · XIB / UIKit · Code / SwiftUI) and architecture picker (MVVM-R default, MVVM, MVC, VIPER) next to the Generate button; switching either regenerates instantly from the already-loaded Figma data.
 - Generated UIKit labels use `UIFontMetrics` + `adjustsFontForContentSizeCategory` for Dynamic Type, and generated `UIImageView`s get a VoiceOver `accessibilityLabel`.
@@ -154,7 +155,7 @@ Other current limitations:
 - Complex vectors, masks, blend modes, gradients and advanced effects are not fully translated yet.
 - XIB edits do not currently re-parse into Browser Preview.
 - Browser preview does not execute arbitrary Swift. It recognizes a safe/common subset of UIKit style assignments.
-- Whole-file Figma URLs compile the first visible top-level node. Node-specific URLs are strongly recommended.
+- File/page URLs require an explicit target selection. Node-specific URLs are the fastest path to a specific screen.
 
 ## Next phases
 
