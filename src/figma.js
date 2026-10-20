@@ -21,6 +21,8 @@ export function parseFigmaUrl(rawUrl) {
   if (path[0]?.toLowerCase() === 'community') {
     if (path[1]?.toLowerCase() !== 'file') throw new Error('This Figma community link does not point to a file.')
     fileKey = path[2]
+  } else if (path[0]?.toLowerCase() === 'design' && path[2]?.toLowerCase() === 'branch') {
+    fileKey = path[3]
   } else if (path[0]?.toLowerCase() !== 'files') {
     fileKey = path[1]
   }

@@ -18,6 +18,11 @@ const links = [
     nodeId: '10:12'
   },
   {
+    url: 'https://www.figma.com/design/ParentKey/branch/BranchKey/Home?node-id=22-8',
+    fileKey: 'BranchKey',
+    nodeId: '22:8'
+  },
+  {
     url: 'https://www.figma.com/design/ComponentFile/Library?node-id=300-20',
     fileKey: 'ComponentFile',
     nodeId: '300:20'
@@ -46,6 +51,7 @@ assert.throws(() => parseFigmaUrl('not a URL'), /Invalid Figma URL/)
 assert.throws(() => parseFigmaUrl('http://www.figma.com/design/FileKey/Home'), /must use HTTPS/)
 assert.throws(() => parseFigmaUrl('https://figma.com.example.org/design/FileKey/Home'), /not a figma\.com URL/)
 assert.throws(() => parseFigmaUrl('https://www.figma.com/community/board/BoardKey/Board'), /does not point to a file/)
+assert.throws(() => parseFigmaUrl('https://www.figma.com/design/ParentKey/branch'), /Could not find a Figma file key/)
 assert.throws(
   () => parseFigmaUrl('https://www.figma.com/design/FileKey/Home?node-id=%25'),
   /Invalid Figma node ID/
