@@ -177,14 +177,12 @@ import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
-import androidx.compose.foundation.layout.matchParentSize
 import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
-import androidx.compose.foundation.layout.verticalScroll
-import androidx.compose.foundation.layout.weight
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.BasicText
 import androidx.compose.runtime.Composable
@@ -324,7 +322,7 @@ function modifierFor(node, { root, modifier, placement, stack }) {
   else if (style.background) parts.push(`background(${composeColor(style.background)}, ${shape})`)
   if (style.borderColor && style.borderWidth > 0) parts.push(`border(${formatNumber(style.borderWidth)}.dp, ${composeColor(style.borderColor)}, ${shape})`)
   if (style.shadow?.blur > 0) parts.push(`shadow(${formatNumber(style.shadow.blur)}.dp, ${shape})`)
-  if (style.opacity < 1) parts.push(`alpha(${formatNumber(style.opacity)})`)
+  if (style.opacity < 1) parts.push(`alpha(${formatNumber(style.opacity)}f)`)
   return parts.join('.').replace(/^Modifier\./, 'Modifier.')
 }
 
@@ -365,7 +363,7 @@ function kotlinName(value) {
 const KOTLIN_KEYWORDS = new Set(['as', 'break', 'class', 'continue', 'do', 'else', 'false', 'for', 'fun', 'if', 'in', 'interface', 'is', 'null', 'object', 'package', 'return', 'super', 'this', 'throw', 'true', 'try', 'typealias', 'typeof', 'val', 'var', 'when', 'while'])
 
 function isValidAndroidNamespace(value) {
-  return /^[a-z][A-Za-z0-9_]*(\.[a-z][A-Za-z0-9_]*)+$/.test(value) && value.split('.').every(part => !KOTLIN_KEYWORDS.has(part))
+  return /^[A-Za-z_][A-Za-z0-9_]*(\.[A-Za-z_][A-Za-z0-9_]*)+$/.test(value) && value.split('.').every(part => !KOTLIN_KEYWORDS.has(part))
 }
 
 function slotParameterNames(slots) {

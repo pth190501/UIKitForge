@@ -24,9 +24,18 @@ const appNamespace = compileUIKit(layoutScreen, 'ScreenView', { androidNamespace
 assert.equal(appNamespace.path, 'Android/src/main/java/vnpt/myapp/uikitforge/generated/ScreenView.kt')
 assert.match(appNamespace.content, /package vnpt\.myapp\.uikitforge\.generated/)
 assert.match(appNamespace.content, /import vnpt\.myapp\.R/)
+assert.ok(compileUIKit(layoutScreen, 'ScreenView', { androidNamespace: 'com.Example.MyApp' }).androidFiles[0].content.includes('package com.Example.MyApp.uikitforge.generated'))
 
 const long = compileUIKit(longScreen, 'LongView').androidFiles.find(file => file.kind === 'main')
 assert.match(long.content, /verticalScroll\(rememberScrollState\(\)\)/)
+assert.match(long.content, /import androidx\.compose\.foundation\.verticalScroll/)
+assert.doesNotMatch(long.content, /import androidx\.compose\.foundation\.layout\.(?:matchParentSize|verticalScroll|weight)/)
+
+const opacityFile = generateAndroidComposeFiles({
+  rootClass: 'OpacityView',
+  mainIR: { kind: 'view', outlet: 'root', frame: { width: 100, height: 100 }, sizing: { h: 'FIXED', v: 'FIXED' }, style: { opacity: 0.5 }, meta: {}, children: [] }
+})[0]
+assert.match(opacityFile.content, /alpha\(0\.5f\)/)
 
 const fidelity = compileUIKit(fidelityScreen, 'PromoView').androidFiles
 assert.match(fidelity.find(file => file.kind === 'main').content, /R\.drawable\.star_icon/)
@@ -84,6 +93,17 @@ try {
   assert.ok(packed.has('Android/src/main/res/drawable-xhdpi/photo.png'))
   assert.ok(packed.has('Android/src/main/res/drawable-xxhdpi/photo.png'))
   assert.ok(packed.has('Android/src/main/res/drawable-nodpi/original.jpg'))
+  const collisionWarnings = await addAndroidImageAssets(zip, {
+    refs: [
+      { outlet: 'hero-image', figmaId: 'first' },
+      { outlet: 'hero_image', figmaId: 'second' }
+    ],
+    nodeImageExports: {
+      first: { '2x': 'https://example.test/first-2x.png', '3x': 'https://example.test/first-3x.png' },
+      second: { '2x': 'https://example.test/second-2x.png', '3x': 'https://example.test/second-3x.png' }
+    }
+  })
+  assert.ok(collisionWarnings.some(warning => warning.includes('collides after sanitization')))
 } finally {
   globalThis.fetch = originalFetch
 }
