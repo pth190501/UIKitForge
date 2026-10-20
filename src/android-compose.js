@@ -17,8 +17,8 @@ export function androidResourceName(value) {
 export async function addAndroidImageAssets(zip, { assets = [], refs = [], nodeImageExports = {}, imageMap = {} } = {}) {
   const warnings = []
   const seen = new Map()
-  const reserve = (outlet, identity = outlet) => {
-    const name = androidResourceName(outlet)
+  const reserve = (outlet, identity = outlet, resourceName = outlet) => {
+    const name = androidResourceName(resourceName)
     if (seen.has(name) && seen.get(name) !== identity) {
       warnings.push(`${outlet}: Android image resource name collides after sanitization.`)
       return null
@@ -39,7 +39,7 @@ export async function addAndroidImageAssets(zip, { assets = [], refs = [], nodeI
   }
   for (const asset of assets) if (asset?.dataUrl) addDataUrl(asset.name, asset.dataUrl)
 
-  const addRemote = async (outlet, identity, url, directory) => {
+  const addRemote = async (outlet, identity, url, directory, resourceName = outlet) => {
     try {
       const response = await fetch(url)
       if (!response.ok) {
@@ -52,7 +52,7 @@ export async function addAndroidImageAssets(zip, { assets = [], refs = [], nodeI
         warnings.push(`${outlet}: unsupported Android image format.`)
         return false
       }
-      const name = reserve(outlet, identity)
+      const name = reserve(outlet, identity, resourceName)
       if (!name) return false
       zip.file(`Android/src/main/res/${directory}/${name}.${ext}`, blob)
       return true
@@ -62,12 +62,13 @@ export async function addAndroidImageAssets(zip, { assets = [], refs = [], nodeI
     }
   }
 
-  for (const { outlet, figmaId, imageRef } of refs) {
+  for (const { outlet, assetName, figmaId, imageRef } of refs) {
     if (!outlet) continue
+    const resourceName = assetName || outlet
     if (imageRef) {
       const url = imageMap[imageRef]
       if (!url) warnings.push(`${outlet}: Figma image fill URL is unavailable.`)
-      else await addRemote(outlet, imageRef, url, 'drawable-nodpi')
+      else await addRemote(outlet, imageRef, url, 'drawable-nodpi', resourceName)
       continue
     }
     const urls = nodeImageExports[figmaId]
@@ -76,7 +77,7 @@ export async function addAndroidImageAssets(zip, { assets = [], refs = [], nodeI
       continue
     }
     for (const [scale, density] of [['2x', 'drawable-xhdpi'], ['3x', 'drawable-xxhdpi']]) {
-      if (urls[scale]) await addRemote(outlet, figmaId || outlet, urls[scale], density)
+      if (urls[scale]) await addRemote(outlet, figmaId || outlet, urls[scale], density, resourceName)
     }
   }
   return warnings
@@ -225,7 +226,7 @@ function renderNode(node, ctx, { root = false, modifier = 'Modifier', placement 
     .map(child => renderNode(child, ctx, { placement: 'box' }))
     .join('\n')
   const backgroundImage = node.style?.backgroundImage
-    ? `Image(painter = painterResource(id = R.drawable.${androidResourceName(`${node.outlet}Background`)}), contentDescription = null, contentScale = ${imageScale(node.style.backgroundImage.scaleMode)}, modifier = Modifier.matchParentSize())`
+    ? `Image(painter = painterResource(id = R.drawable.${androidResourceName(node.backgroundAssetName || `${node.outlet}Background`)}), contentDescription = null, contentScale = ${imageScale(node.style.backgroundImage.scaleMode)}, modifier = Modifier.matchParentSize())`
     : ''
   return `Box(modifier = ${nodeModifier}) {\n${indent([backgroundImage, body].filter(Boolean).join('\n'), 1)}\n}`
 }
@@ -282,7 +283,7 @@ function textRuns(node) {
 }
 
 function renderImage(node, modifier) {
-  return `Image(painter = painterResource(id = R.drawable.${androidResourceName(node.outlet)}), contentDescription = ${node.name ? kotlinString(node.name) : 'null'}, contentScale = ${imageScale(node.style?.imageScaleMode)}, modifier = ${modifier})`
+  return `Image(painter = painterResource(id = R.drawable.${androidResourceName(node.assetName || node.outlet)}), contentDescription = ${node.name ? kotlinString(node.name) : 'null'}, contentScale = ${imageScale(node.style?.imageScaleMode)}, modifier = ${modifier})`
 }
 
 function renderComponentCall(node, modifier, ctx) {

@@ -1,6 +1,6 @@
 import { findComponentCandidates, firstVisibleSolidPaint, isRasterCandidate, VIEW_TYPES } from './figma.js'
 import { createColorRegistry } from './color-registry.js'
-import { foldDiacritics, joinWordsCapped } from './identifier.js'
+import { foldDiacritics, joinWordsCapped, MAX_IDENTIFIER_LENGTH } from './identifier.js'
 
 const MIN_DEPLOYMENT_TARGET = 13
 const MAX_DEPLOYMENT_TARGET = 18
@@ -45,6 +45,7 @@ export function compileUIKit(figmaData, requestedRootClass = '', options = {}) {
   const mainIR = buildIR(mainSource, null, componentMap, { skipComponentForNodeId: rasterRoot ? mainSource.id : sourceRoot.id })
   dedupeOutlets(mainIR)
   ensureUniqueIds(mainIR)
+  assignUniqueAssetNames([mainIR, ...builtComponents.map(({ ir }) => ir)])
   // Mỗi instance mang nội dung riêng (text/ẩn-hiện khác instance gốc) → gắn overrides để code gọi configure.
   const rawById = indexRawTree(sourceRoot)
   const slotsByClass = new Map(builtComponents.map(({ entry, ir }) => [entry.className, ir.slots]))
@@ -469,7 +470,37 @@ private final class InnerShadowView: UIView {
 `
 
 export function backgroundAssetName(node) {
-  return `${node.outlet}Background`
+  return node.backgroundAssetName || `${node.outlet}Background`
+}
+
+function assignUniqueAssetNames(roots) {
+  const byBase = new Map()
+  for (const root of roots) for (const node of flatten(root)) {
+    if (node.kind === 'image') add(node, 'assetName', node.outlet, 'image')
+    if (node.style?.backgroundImage) add(node, 'backgroundAssetName', `${node.outlet}Background`, 'background')
+  }
+
+  const reserved = new Map([...byBase].map(([base, identities]) => [base, identities.keys().next().value]))
+  for (const [base, identities] of byBase) {
+    let suffix = 2
+    for (const [identity, entries] of [...identities].slice(1)) {
+      let name
+      do {
+        const suffixText = String(suffix++)
+        name = `${base.slice(0, MAX_IDENTIFIER_LENGTH - suffixText.length)}${suffixText}`
+      } while (reserved.has(name))
+      reserved.set(name, identity)
+      for (const [node, field] of entries) node[field] = name
+    }
+  }
+
+  function add(node, field, base, kind) {
+    const identity = `${node.figmaId || node.id}:${kind}`
+    if (!byBase.has(base)) byBase.set(base, new Map())
+    const identities = byBase.get(base)
+    if (!identities.has(identity)) identities.set(identity, [])
+    identities.get(identity).push([node, field])
+  }
 }
 
 const IMAGE_CONTENT_MODE = { FILL: '.scaleAspectFill', FIT: '.scaleAspectFit', STRETCH: '.scaleToFill', TILE: '.scaleToFill' }
@@ -1218,7 +1249,7 @@ function generateSwiftStyleLines(root, { includeStatic = false, rootRef = 'conte
     if (node.kind === 'image' && includeStatic) {
       lines.push(`        ${target}contentMode = .scaleAspectFit`)
       // Tên asset = outlet, khớp với Image(...) bên SwiftUI — xem generateUIKitAssets ở figma.js/main.js.
-      lines.push(`        ${target}image = UIImage(named: ${swiftString(node.outlet)})`)
+      lines.push(`        ${target}image = UIImage(named: ${swiftString(node.assetName || node.outlet)})`)
       // VoiceOver: layer Figma không phân biệt ảnh trang trí và ảnh nội dung, nên coi mọi UIImageView là
       // nội dung có nghĩa và gán accessibilityLabel từ tên layer; tên vô nghĩa (Rectangle 12, Frame 3...)
       // vẫn còn hơn im lặng hoàn toàn với VoiceOver.
