@@ -17,14 +17,17 @@ export function parseFigmaUrl(rawUrl) {
   }
 
   const path = url.pathname.split('/').filter(Boolean)
+  const route = path[0]?.toLowerCase()
   let fileKey
-  if (path[0]?.toLowerCase() === 'community') {
+  if (route === 'community') {
     if (path[1]?.toLowerCase() !== 'file') throw new Error('This Figma community link does not point to a file.')
     fileKey = path[2]
-  } else if (path[0]?.toLowerCase() === 'design' && path[2]?.toLowerCase() === 'branch') {
+  } else if (route === 'design' && path[2]?.toLowerCase() === 'branch') {
     fileKey = path[3]
-  } else if (path[0]?.toLowerCase() !== 'files') {
+  } else if (['design', 'proto', 'file'].includes(route)) {
     fileKey = path[1]
+  } else {
+    throw new Error('Only Figma Design and Prototype links are supported.')
   }
   if (!fileKey) throw new Error('Could not find a Figma file key in this URL.')
   const rawNodeId = url.searchParams.get('node-id')

@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict'
-import { normalizeNodeId, parseFigmaUrl } from '../src/figma.js'
+import { fetchFigmaSelection, normalizeNodeId, parseFigmaUrl } from '../src/figma.js'
 
 const links = [
   {
@@ -50,11 +50,49 @@ assert.throws(() => parseFigmaUrl(''), /Please paste a Figma URL/)
 assert.throws(() => parseFigmaUrl('not a URL'), /Invalid Figma URL/)
 assert.throws(() => parseFigmaUrl('http://www.figma.com/design/FileKey/Home'), /must use HTTPS/)
 assert.throws(() => parseFigmaUrl('https://figma.com.example.org/design/FileKey/Home'), /not a figma\.com URL/)
+assert.throws(() => parseFigmaUrl('https://www.figma.com/board/BoardKey/Board'), /Only Figma Design and Prototype links are supported/)
+assert.throws(() => parseFigmaUrl('https://www.figma.com/slides/SlidesKey/Deck'), /Only Figma Design and Prototype links are supported/)
+assert.throws(() => parseFigmaUrl('https://www.figma.com/make/MakeKey/Prototype'), /Only Figma Design and Prototype links are supported/)
 assert.throws(() => parseFigmaUrl('https://www.figma.com/community/board/BoardKey/Board'), /does not point to a file/)
 assert.throws(() => parseFigmaUrl('https://www.figma.com/design/ParentKey/branch'), /Could not find a Figma file key/)
 assert.throws(
   () => parseFigmaUrl('https://www.figma.com/design/FileKey/Home?node-id=%25'),
   /Invalid Figma node ID/
 )
+
+const originalFetch = globalThis.fetch
+const requests = []
+try {
+  globalThis.fetch = async (input, options) => {
+    const url = new URL(input)
+    requests.push({ url, options })
+    const document = { id: url.pathname.endsWith('/nodes') ? '22:8' : '0:0', type: 'FRAME', name: 'Home', children: [] }
+    return {
+      ok: true,
+      status: 200,
+      json: async () => url.pathname.endsWith('/nodes')
+        ? { nodes: { '22:8': { document } }, components: {}, componentSets: {}, styles: {} }
+        : { document: { ...document, type: 'DOCUMENT' }, components: {}, componentSets: {}, styles: {} }
+    }
+  }
+
+  const branch = await fetchFigmaSelection({ figmaUrl: links.find(link => link.fileKey === 'BranchKey').url, token: ' test-token ' })
+  assert.equal(branch.source.fileKey, 'BranchKey')
+  assert.equal(branch.root.id, '22:8')
+  assert.equal(requests[0].url.pathname, '/v1/files/BranchKey/nodes')
+  assert.equal(requests[0].url.searchParams.get('ids'), '22:8')
+  assert.equal(requests[0].options.headers['X-Figma-Token'], 'test-token')
+
+  const page = await fetchFigmaSelection({ figmaUrl: 'https://www.figma.com/design/PageFile/Home', token: 'test-token' })
+  assert.equal(page.indexOnly, true)
+  assert.equal(requests[1].url.pathname, '/v1/files/PageFile')
+  assert.equal(requests[1].url.searchParams.get('depth'), '3')
+
+  const community = await fetchFigmaSelection({ figmaUrl: 'https://www.figma.com/community/file/CommunityKey/Starter', token: 'test-token' })
+  assert.equal(community.source.fileKey, 'CommunityKey')
+  assert.equal(requests[2].url.pathname, '/v1/files/CommunityKey')
+} finally {
+  globalThis.fetch = originalFetch
+}
 
 console.log('✓ Figma design/prototype URLs, target IDs and invalid links passed')
