@@ -43,15 +43,18 @@ for (const [fixtureName, data] of Object.entries(FIXTURES)) {
 const androidPackagePath = `${ANDROID_NAMESPACE.replaceAll('.', '/')}/uikitforge/generated`
 const androidSourcePrefix = `Android/src/main/java/${androidPackagePath}/`
 const androidResources = new Set()
+let androidSourceCount = 0
 for (const [fixtureName, data] of Object.entries(ANDROID_FIXTURES)) {
   const rootClass = `${fixtureName[0].toUpperCase()}${fixtureName.slice(1)}View`
   const compiled = compileUIKit(data, rootClass, { androidNamespace: ANDROID_NAMESPACE })
   for (const file of compiled.androidFiles) {
     if (!file.path.startsWith(androidSourcePrefix)) throw new Error(`Unexpected Android output path: ${file.path}`)
     write(join(ANDROID_DIR, 'src/main/java', androidPackagePath, file.path.slice(androidSourcePrefix.length)), file.content)
+    androidSourceCount += 1
     for (const [, name] of file.content.matchAll(/\bR\.drawable\.([a-z][a-z0-9_]*)/g)) androidResources.add(name)
   }
 }
+if (androidSourceCount === 0) throw new Error('No Android Compose fixture files were generated.')
 
 const placeholderVector = `<vector xmlns:android="http://schemas.android.com/apk/res/android"
     android:width="1dp" android:height="1dp" android:viewportWidth="1" android:viewportHeight="1">

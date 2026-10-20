@@ -162,6 +162,9 @@ jobs:
       - name: Dump generated Android fixtures
         run: node scripts/ci-dump-fixtures.mjs
 
+      - name: Verify generated Kotlin sources
+        run: test -n "$(find ci-artifacts/android-compose/src/main/java -name '*.kt' -print -quit)"
+
       - name: Setup Java
         uses: actions/setup-java@v5
         with:

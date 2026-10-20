@@ -15,9 +15,8 @@ android {
         compose = true
     }
 
-    sourceSets.getByName("main").java.srcDir(
-        layout.projectDirectory.dir("../../ci-artifacts/android-compose/src/main/java")
-    )
+    sourceSets.getByName("main").kotlin.directories +=
+        layout.projectDirectory.dir("../../ci-artifacts/android-compose/src/main/java").asFile.absolutePath
     sourceSets.getByName("main").res.srcDir(
         layout.projectDirectory.dir("../../ci-artifacts/android-compose/src/main/res")
     )
