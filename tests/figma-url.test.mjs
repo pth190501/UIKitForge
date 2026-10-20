@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict'
-import { fetchFigmaSelection, normalizeNodeId, parseFigmaUrl } from '../src/figma.js'
+import { collectFigmaRootCandidates, fetchFigmaSelection, normalizeNodeId, parseFigmaUrl, requiresFigmaRootSelection } from '../src/figma.js'
 
 const links = [
   {
@@ -94,5 +94,26 @@ try {
 } finally {
   globalThis.fetch = originalFetch
 }
+
+const pageTree = {
+  id: '0:0', type: 'DOCUMENT', children: [{
+    id: '0:1', type: 'CANVAS', name: 'Home', children: [
+      { id: '10:1', type: 'FRAME', name: 'Screen', children: [] },
+      { id: '20:1', type: 'COMPONENT_SET', name: 'Button', children: [
+        { id: '20:2', type: 'COMPONENT', name: 'State=On' },
+        { id: '20:3', type: 'COMPONENT', name: 'State=Off', visible: false }
+      ] },
+      { id: '30:1', type: 'FRAME', name: 'Hidden screen', visible: false }
+    ]
+  }]
+}
+const candidates = collectFigmaRootCandidates(pageTree)
+assert.deepEqual(candidates.map(({ nodeId }) => nodeId), ['10:1', '20:2'])
+assert.equal(candidates[0].label, 'Home › Screen')
+assert.equal(candidates[1].label, 'Home › Button › State=On')
+assert.deepEqual(collectFigmaRootCandidates(pageTree.children[0].children[1]).map(({ nodeId }) => nodeId), ['20:2'])
+assert.equal(requiresFigmaRootSelection({ nodeId: null }, { root: { type: 'DOCUMENT' } }), true)
+assert.equal(requiresFigmaRootSelection({ nodeId: '20:1' }, { root: { type: 'COMPONENT_SET' } }), true)
+assert.equal(requiresFigmaRootSelection({ nodeId: '10:1' }, { root: { type: 'FRAME' } }), false)
 
 console.log('✓ Figma design/prototype URLs, target IDs and invalid links passed')

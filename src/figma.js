@@ -112,6 +112,66 @@ export async function fetchFigmaSelection({ figmaUrl, token, nodeId: requestedNo
   }
 }
 
+export function collectFigmaRootCandidates(root) {
+  const candidates = []
+  const seen = new Set()
+  const add = (node, parents = []) => {
+    const nodeId = String(node?.id || '')
+    if (!nodeId || seen.has(nodeId)) return
+    seen.add(nodeId)
+    candidates.push({ node, nodeId, type: node.type || 'NODE', label: [...parents, node.name || node.type || 'Untitled'].join(' › ') })
+  }
+
+  const addVariants = (componentSet, parents) => {
+    const setPath = [...parents, componentSet.name || 'Component set']
+    for (const variant of componentSet.children || []) {
+      if (variant.visible !== false && variant.type === 'COMPONENT') add(variant, setPath)
+    }
+  }
+
+  const visitNested = (node, parents) => {
+    if (!node || node.visible === false) return
+    if (node.type === 'COMPONENT_SET') {
+      addVariants(node, parents)
+      return
+    }
+    if (['FRAME', 'COMPONENT', 'INSTANCE'].includes(node.type)) {
+      add(node, parents)
+      return
+    }
+    const path = [...parents, node.name || node.type || 'Untitled']
+    if (['GROUP', 'SECTION'].includes(node.type)) add(node, parents)
+    for (const child of node.children || []) visitNested(child, path)
+  }
+
+  const visitPage = page => {
+    const pageName = page.name || 'Untitled page'
+    for (const child of page.children || []) {
+      if (child.visible === false) continue
+      if (child.type === 'COMPONENT_SET') addVariants(child, [pageName])
+      else {
+        add(child, [pageName])
+        visitNested(child, [pageName, child.name || child.type || 'Untitled'])
+      }
+    }
+  }
+
+  if (root?.type === 'DOCUMENT') {
+    for (const page of root.children || []) if (page.type === 'CANVAS' && page.visible !== false) visitPage(page)
+  } else if (root?.type === 'CANVAS') {
+    visitPage(root)
+  } else if (root?.type === 'COMPONENT_SET') {
+    addVariants(root, [])
+  } else if (root) {
+    add(root)
+  }
+  return candidates
+}
+
+export function requiresFigmaRootSelection(parsedUrl, figmaData) {
+  return !parsedUrl.nodeId || ['DOCUMENT', 'CANVAS', 'COMPONENT_SET'].includes(figmaData.root?.type)
+}
+
 // Chia node ID thành nhóm có giới hạn cho endpoint export ảnh Figma.
 export function batchFigmaNodeIds(ids, batchSize = 20) {
   const unique = [...new Set((ids || []).filter(Boolean))]
