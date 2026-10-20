@@ -33,7 +33,12 @@ export function parseFigmaUrl(rawUrl) {
 
 export function normalizeNodeId(nodeId) {
   if (!nodeId) return null
-  const decoded = decodeURIComponent(nodeId)
+  let decoded
+  try {
+    decoded = decodeURIComponent(nodeId)
+  } catch {
+    throw new Error('Invalid Figma node ID.')
+  }
   if (decoded.includes(':')) return decoded
   return decoded.replace(/-/g, ':')
 }

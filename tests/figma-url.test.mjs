@@ -1,0 +1,54 @@
+import assert from 'node:assert/strict'
+import { normalizeNodeId, parseFigmaUrl } from '../src/figma.js'
+
+const links = [
+  {
+    url: 'https://www.figma.com/design/DesignKey/Home?node-id=22-8',
+    fileKey: 'DesignKey',
+    nodeId: '22:8'
+  },
+  {
+    url: 'https://figma.com/file/LegacyKey/Home?node-id=3%3A4',
+    fileKey: 'LegacyKey',
+    nodeId: '3:4'
+  },
+  {
+    url: 'https://www.figma.com/proto/PrototypeKey/Prototype?node-id=10-12&scaling=scale-down',
+    fileKey: 'PrototypeKey',
+    nodeId: '10:12'
+  },
+  {
+    url: 'https://www.figma.com/design/ComponentFile/Library?node-id=300-20',
+    fileKey: 'ComponentFile',
+    nodeId: '300:20'
+  },
+  {
+    url: 'https://www.figma.com/community/file/CommunityKey/Starter-File',
+    fileKey: 'CommunityKey',
+    nodeId: null
+  },
+  {
+    url: 'https://www.figma.com/design/PageFile/Home',
+    fileKey: 'PageFile',
+    nodeId: null
+  }
+]
+
+for (const { url, fileKey, nodeId } of links) {
+  const parsed = parseFigmaUrl(url)
+  assert.equal(parsed.fileKey, fileKey, url)
+  assert.equal(parsed.nodeId, nodeId, url)
+}
+
+assert.equal(normalizeNodeId('3%3A4'), '3:4')
+assert.throws(() => parseFigmaUrl(''), /Please paste a Figma URL/)
+assert.throws(() => parseFigmaUrl('not a URL'), /Invalid Figma URL/)
+assert.throws(() => parseFigmaUrl('http://www.figma.com/design/FileKey/Home'), /must use HTTPS/)
+assert.throws(() => parseFigmaUrl('https://figma.com.example.org/design/FileKey/Home'), /not a figma\.com URL/)
+assert.throws(() => parseFigmaUrl('https://www.figma.com/community/board/BoardKey/Board'), /does not point to a file/)
+assert.throws(
+  () => parseFigmaUrl('https://www.figma.com/design/FileKey/Home?node-id=%25'),
+  /Invalid Figma node ID/
+)
+
+console.log('✓ Figma design/prototype URLs, target IDs and invalid links passed')
