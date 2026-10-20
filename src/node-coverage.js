@@ -167,7 +167,7 @@ export function nodeCoverageMarkdown(report) {
 }
 
 // Kiểm tra đường dẫn riêng cho từng kiểu ZIP trước khi đưa file vào gói xuất.
-export function auditExportPaths(files = [], swiftUIFiles = []) {
+export function auditExportPaths(files = [], swiftUIFiles = [], androidFiles = []) {
   const collisions = []
   const unsafe = []
   const pathOf = file => String(file.path || '').replaceAll('\\', '/')
@@ -177,7 +177,7 @@ export function auditExportPaths(files = [], swiftUIFiles = []) {
       unsafe.push({ target: file.target || 'shared', path })
     }
   }
-  for (const file of [...files, ...swiftUIFiles]) check(file)
+  for (const file of [...files, ...swiftUIFiles, ...androidFiles]) check(file)
 
   const configs = files.filter(file => file.kind === 'config')
   const variants = [
@@ -187,7 +187,8 @@ export function auditExportPaths(files = [], swiftUIFiles = []) {
         .map(file => file.target === 'uikit' ? { ...file, path: `UIKit-Code/${file.path}` } : file),
       ...configs
     ]],
-    ['swiftui', [...swiftUIFiles, ...configs]]
+    ['swiftui', [...swiftUIFiles, ...configs]],
+    ['android-compose', [...androidFiles, ...configs]]
   ]
   for (const [target, manifest] of variants) {
     const seen = new Set()

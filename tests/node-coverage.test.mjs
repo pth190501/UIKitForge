@@ -61,6 +61,13 @@ assert.equal(auditExportPaths([{ path: 'Root/Root.swift', target: 'uikit-xib' },
 assert.deepEqual(auditExportPaths([{ path: 'A.swift', target: 'uikit-xib' },
   { path: 'A.swift', target: 'uikit-xib' }]).collisions,
 [{ path: 'A.swift', target: 'uikit-xib' }])
+assert.deepEqual(auditExportPaths([], [], [
+  { path: 'Screen.kt', target: 'android-compose' },
+  { path: 'Screen.kt', target: 'android-compose' }
+]).collisions, [{ path: 'Screen.kt', target: 'android-compose' }])
+assert.equal(auditExportPaths([{ path: 'Screen.kt', target: 'uikit-code' }], [], [
+  { path: 'Screen.kt', target: 'android-compose' }
+]).ok, true)
 assert.equal(auditExportPaths([{ path: '../secrets.txt' }]).ok, false)
 assert.equal(auditExportPaths([{ path: '/absolute.txt' }]).ok, false)
 

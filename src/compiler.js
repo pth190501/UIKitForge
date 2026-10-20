@@ -2,6 +2,7 @@ import { collectTodoItems, compileUIKit as compileCore, displayText, sanitizeOut
 import { figmaPaintToCss, firstVisiblePaint, isRasterCandidate } from './figma.js'
 import { applySwiftPreview } from './preview.js'
 import { generateSwiftUIFiles } from './swiftui.js'
+import { generateAndroidComposeFiles } from './android-compose.js'
 import { generateUIKitMVVMFiles, normalizeArchitecture } from './uikit-router.js'
 import { planColorNames, styleColorNames } from './color-registry.js'
 import { LINT_CONFIG_FILES } from './lint-config.js'
@@ -22,6 +23,7 @@ function generateAll(figmaData, requestedRootClass, options) {
   const result = compileCore(figmaData, requestedRootClass, options)
   result.architecture = normalizeArchitecture(options.architecture)
   result.swiftUIFiles = generateSwiftUIFiles({ rootClass: result.rootClass, mainIR: result.previewRoot, componentIRs: result.componentIRs, deploymentTarget: result.deploymentTarget, colorRegistry: result.colorRegistry, architecture: result.architecture, scroll: result.scroll })
+  result.androidFiles = generateAndroidComposeFiles({ rootClass: result.rootClass, mainIR: result.previewRoot, componentIRs: result.componentIRs, scroll: result.scroll, androidNamespace: options.androidNamespace })
   return result
 }
 
@@ -85,7 +87,7 @@ function finishCompile(result, figmaData) {
     ...result.files,
     { path: 'README.md', name: 'README.md', kind: 'config' },
     { path: 'UIKitForge.generated.json', name: 'UIKitForge.generated.json', kind: 'config' }
-  ], result.swiftUIFiles)
+  ], result.swiftUIFiles, result.androidFiles)
   if (!result.exportPathAudit.ok) {
     result.warnings.push(`Generated export paths need review: ${result.exportPathAudit.collisions.length} collisions and ${result.exportPathAudit.unsafe.length} unsafe paths.`)
   }

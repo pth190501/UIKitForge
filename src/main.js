@@ -2,6 +2,7 @@ import JSZip from 'jszip'
 import './styles.css'
 import './image-mode.css'
 import { collectFigmaRootCandidates, fetchFigmaSelection, parseFigmaUrl, requiresFigmaRootSelection, summarizeFigmaTree } from './figma.js'
+import { addAndroidImageAssets } from './android-compose.js'
 import { compileUIKit } from './compiler.js'
 import { analyzeScreenshot } from './screenshot.js'
 import { applySwiftPreview, describeNode, measurePreviewLayout, rasterizePreviewToCanvas, renderUIKitPreview, walkPreview } from './preview.js'
@@ -99,6 +100,7 @@ app.innerHTML = `
             <button type="button" role="radio" data-value="uikit-xib" aria-checked="true" class="active">UIKit · XIB</button>
             <button type="button" role="radio" data-value="uikit-code" aria-checked="false">UIKit · Code</button>
             <button type="button" role="radio" data-value="swiftui" aria-checked="false">SwiftUI</button>
+            <button type="button" role="radio" data-value="android-compose" aria-checked="false">Android · Compose</button>
           </div>
         </div>
         <div class="field architecture-field">
@@ -119,6 +121,11 @@ app.innerHTML = `
             <option value="16">iOS 16</option>
             <option value="17">iOS 17+</option>
           </select>
+        </div>
+        <div class="field android-namespace-field" id="androidNamespaceField" hidden>
+          <label for="androidNamespace">Android namespace</label>
+          <input id="androidNamespace" type="text" value="com.example.app" spellcheck="false" />
+          <small>Must match the namespace in your app's Gradle module.</small>
         </div>
         <div class="field root-class-field">
           <label for="rootClass">Root class</label>
@@ -190,7 +197,7 @@ app.innerHTML = `
 `
 
 const refs = Object.fromEntries([
-  'figmaUrl', 'figmaRootPicker', 'figmaRootSelect', 'rootClass', 'outputTarget', 'architecture', 'deploymentTarget', 'figmaToken', 'toggleToken', 'forgetToken', 'rememberToken', 'screenshotImage', 'screenshotDrop', 'screenshotName',
+  'figmaUrl', 'figmaRootPicker', 'figmaRootSelect', 'rootClass', 'outputTarget', 'architecture', 'deploymentTarget', 'androidNamespace', 'androidNamespaceField', 'figmaToken', 'toggleToken', 'forgetToken', 'rememberToken', 'screenshotImage', 'screenshotDrop', 'screenshotName',
   'generateButton', 'demoButton', 'downloadFileButton', 'downloadAllButton', 'statusText', 'statusMetrics', 'statusProgress',
   'statusStrip', 'workspace', 'fileCount', 'filesList', 'editorLanguage', 'editorFilename', 'codeEditor', 'editorFooter',
   'previewPanel', 'previewCanvas', 'previewTitle', 'previewSize', 'overlayRange', 'overlayValue', 'diffMatchValue', 'inspector', 'layersPanel',
@@ -200,13 +207,15 @@ const refs = Object.fromEntries([
 
 restoreToken()
 wireEvents()
+updateOutputTargetControls()
 updateInputMode()
 
 function wireEvents() {
   refs.generateButton.addEventListener('click', generateUIKit)
-  wireSegmented(refs.outputTarget, value => { state.outputTarget = value; if (state.compiled) { renderFileList(); selectFile(0) } })
+  wireSegmented(refs.outputTarget, value => { state.outputTarget = value; updateOutputTargetControls(); recompileCurrent() })
   wireSegmented(refs.architecture, value => { state.architecture = value; recompileCurrent() })
   refs.deploymentTarget.addEventListener('change', recompileCurrent)
+  refs.androidNamespace.addEventListener('change', recompileCurrent)
   refs.demoButton.addEventListener('click', loadDemo)
   refs.figmaUrl.addEventListener('input', () => {
     const hadPendingSelection = Boolean(state.pendingFigmaSelection)
@@ -416,12 +425,19 @@ async function generateUIKit() {
 }
 
 function compileFigmaData(figmaData, rootClass) {
-  const compiled = compileUIKit(figmaData, rootClass, { deploymentTarget: Number(refs.deploymentTarget.value) || 13, architecture: state.architecture })
+  const androidNamespace = state.outputTarget === 'android-compose' ? refs.androidNamespace.value.trim() : 'com.example.app'
+  const compiled = compileUIKit(figmaData, rootClass, {
+    deploymentTarget: Number(refs.deploymentTarget.value) || 13,
+    architecture: state.architecture,
+    androidNamespace
+  })
+  compiled.androidNamespace = androidNamespace
+  compiled.outputTarget = state.outputTarget
   if (figmaData.analysisWarnings?.length) compiled.warnings.push(...figmaData.analysisWarnings)
   compiled.warnings = [...new Set(compiled.warnings)]
   compiled.assets = figmaData.assets || []
   compiled.imageAssetRefs = collectImageAssetRefs(compiled)
-  compiled.readme = generateReadme(compiled)
+  compiled.readme = generateReadme(compiled, state.outputTarget)
   return compiled
 }
 
@@ -429,10 +445,18 @@ function compileFigmaData(figmaData, rootClass) {
 // Code đã sửa tay trong editor sẽ bị thay — đúng ý người dùng khi đổi cấu hình đầu ra.
 function recompileCurrent() {
   if (!state.figmaData || state.generating) return
-  state.compiled = compileFigmaData(state.figmaData, state.compiled?.rootClass || refs.rootClass.value.trim() || 'GeneratedView')
-  state.selectedNodeId = null
-  renderWorkspace()
-  setStatus(`Regenerated ${state.compiled.rootClass} · ${ARCHITECTURE_LABELS[state.architecture]} · iOS ${state.compiled.deploymentTarget}+`, 'success', [`${state.compiled.files.length} files`])
+  try {
+    state.compiled = compileFigmaData(state.figmaData, state.compiled?.rootClass || refs.rootClass.value.trim() || 'GeneratedView')
+    state.selectedNodeId = null
+    renderWorkspace()
+    if (state.outputTarget === 'android-compose') {
+      setStatus(`Regenerated ${state.compiled.rootClass} · Android Compose · ${state.compiled.androidNamespace}`, 'success', [`${state.compiled.androidFiles.length} files`])
+    } else {
+      setStatus(`Regenerated ${state.compiled.rootClass} · ${ARCHITECTURE_LABELS[state.architecture]} · iOS ${state.compiled.deploymentTarget}+`, 'success', [`${state.compiled.files.length} files`])
+    }
+  } catch (error) {
+    setStatus(error?.message || 'Could not regenerate this output.', 'error')
+  }
 }
 
 function wireSegmented(group, onChange) {
@@ -448,6 +472,15 @@ function wireSegmented(group, onChange) {
   })
 }
 
+function updateOutputTargetControls() {
+  const android = state.outputTarget === 'android-compose'
+  refs.androidNamespaceField.hidden = !android
+  refs.architecture.closest('.field').hidden = android
+  refs.deploymentTarget.closest('.field').hidden = android
+  refs.rootClass.closest('.field').querySelector('label').textContent = android ? 'Screen composable' : 'Root class'
+  refs.outputTarget.closest('.config-row').classList.toggle('android-output', android)
+}
+
 function renderWorkspace() {
   if (!state.compiled) return
   renderFileList(); renderWarnings(); selectFile(0); refs.downloadAllButton.disabled = false
@@ -458,10 +491,14 @@ function renderWorkspace() {
 function visibleFiles() {
   const compiled = state.compiled
   if (!compiled) return []
-  const configFiles = compiled.files.filter(file => file.kind === 'config')
+  const configFiles = compiled.files.filter(file => file.kind === 'config' && (
+    state.outputTarget !== 'android-compose' || file.path.startsWith('Reports/')
+  ))
   const readme = compiled.readme ? [{ path: 'README.md', name: 'README.md', language: 'markdown', content: compiled.readme, kind: 'config' }] : []
   const generated = state.outputTarget === 'swiftui'
     ? (compiled.swiftUIFiles || [])
+    : state.outputTarget === 'android-compose'
+      ? (compiled.androidFiles || [])
     : compiled.files
         .filter(file => file.target === state.outputTarget || file.target === 'uikit')
         .map(file => rerootSharedMVVMFile(file, state.outputTarget))
@@ -479,7 +516,7 @@ function renderFileList() {
     if (group !== previousGroup) { const label = document.createElement('div'); label.className = 'file-group-label'; label.textContent = group; refs.filesList.appendChild(label); previousGroup = group }
     const button = document.createElement('button')
     button.className = 'file-row'; button.dataset.index = String(index)
-    button.innerHTML = `<span class="file-icon ${file.language}">${file.language === 'swift' ? 'S' : file.language === 'xml' ? 'X' : 'M'}</span><span class="file-meta"><strong>${escapeHtml(file.name)}</strong><small>${escapeHtml(file.path)}</small></span><span class="file-chevron">›</span>`
+    button.innerHTML = `<span class="file-icon ${file.language}">${file.language === 'swift' ? 'S' : file.language === 'xml' ? 'X' : file.language === 'kotlin' ? 'K' : 'M'}</span><span class="file-meta"><strong>${escapeHtml(file.name)}</strong><small>${escapeHtml(file.path)}</small></span><span class="file-chevron">›</span>`
     button.addEventListener('click', () => selectFile(index)); refs.filesList.appendChild(button)
   })
 }
@@ -498,16 +535,17 @@ function currentFile() { return visibleFiles()[state.selectedFileIndex] || null 
 function currentPreviewRoot() {
   if (!state.compiled) return null
   const file = currentFile()
-  if (file?.kind === 'component') { const className = file.name.replace(/\.(swift|xib)$/i, ''); return state.compiled.componentPreviews?.[className] || state.compiled.previewRoot }
+  if (file?.kind === 'component') { const className = file.name.replace(/\.(swift|xib|kt)$/i, ''); return state.compiled.componentPreviews?.[className] || state.compiled.previewRoot }
   if (state.outputTarget === 'swiftui') return state.compiled.previewRoot // cú pháp SwiftUI không khớp regex applySwiftPreview (viết cho UIKit)
   const mainSwift = state.compiled.files.find(item => item.kind === 'main' && item.language === 'swift' && item.target === state.outputTarget)
   return mainSwift ? applySwiftPreview(state.compiled.previewRoot, mainSwift.content, { namedColors: state.compiled.namedColors }) : state.compiled.previewRoot
 }
-function previewDisplayName(file, root) { return file?.kind === 'component' ? file.name.replace(/\.(swift|xib)$/i, '') : state.compiled?.rootClass || root?.name || 'UIKit layout' }
+function previewDisplayName(file, root) { return file?.kind === 'component' ? file.name.replace(/\.(swift|xib|kt)$/i, '') : state.compiled?.rootClass || root?.name || 'UIKit layout' }
 
 function updateEditorFooter(file) {
   if (file.language === 'swift') { refs.editorFooter.innerHTML = `<span class="footer-live-dot"></span><strong>Live:</strong> UIKit colors, text, fonts, visibility, border and corner radius update in Preview as you type.`; refs.editorFooter.classList.add('live') }
   else if (file.language === 'xml') { refs.editorFooter.textContent = 'XIB is editable and export-ready. Image-only structure is inferred from pixels, so validate semantics before production use.'; refs.editorFooter.classList.remove('live') }
+  else if (file.language === 'kotlin') { refs.editorFooter.textContent = 'Jetpack Compose source is included in the Android integration ZIP. Browser Preview shows the shared Figma layout; Kotlin edits are not interpreted live.'; refs.editorFooter.classList.remove('live') }
   else { refs.editorFooter.textContent = 'Generated report or config file. Included in the export ZIP.'; refs.editorFooter.classList.remove('live') }
 }
 
@@ -607,13 +645,24 @@ async function downloadAllFiles() {
   if (!state.compiled) return
   const zip = new JSZip()
   for (const file of visibleFiles()) zip.file(file.path, file.content)
-  for (const asset of state.compiled.assets || []) addImageAsset(zip, asset)
-  const assetWarnings = await addFigmaImageAssets(
-    zip,
-    state.compiled.imageAssetRefs || [],
-    state.figmaData?.nodeImageExports,
-    state.figmaData?.imageMap
-  )
+  let assetWarnings
+  if (state.outputTarget === 'android-compose') {
+    assetWarnings = await addAndroidImageAssets(zip, {
+      assets: state.compiled.assets || [],
+      refs: state.compiled.imageAssetRefs || [],
+      nodeImageExports: state.figmaData?.nodeImageExports,
+      imageMap: state.figmaData?.imageMap
+    })
+  } else {
+    for (const asset of state.compiled.assets || []) addImageAsset(zip, asset)
+    assetWarnings = await addFigmaImageAssets(
+      zip,
+      state.compiled.imageAssetRefs || [],
+      state.figmaData?.nodeImageExports,
+      state.figmaData?.imageMap
+    )
+    addColorAssets(zip, state.compiled.colors || [])
+  }
   const hasPathIssues = state.compiled.exportPathAudit?.ok === false
   const nodeCoverage = state.compiled.nodeCoverage
     ? {
@@ -628,13 +677,14 @@ async function downloadAllFiles() {
     zip.file('Reports/FIGMA_NODE_COVERAGE.json', JSON.stringify(nodeCoverage, null, 2))
     zip.file('Reports/FIGMA_NODE_COVERAGE.md', nodeCoverageMarkdown(nodeCoverage))
   }
-  addColorAssets(zip, state.compiled.colors || [])
   if (state.referenceImage) zip.file('References/source-screenshot.png', dataUrlPayload(state.referenceImage), { base64: true })
   const warnings = [...state.compiled.warnings, ...assetWarnings]
   const nodeCoverageStatus = state.compiled.nodeCoverage?.status === 'INCOMPLETE' || assetWarnings.length || hasPathIssues
     ? 'INCOMPLETE' : state.compiled.nodeCoverage?.status || null
   zip.file('UIKitForge.generated.json', JSON.stringify({
     rootClass: state.compiled.rootClass,
+    outputTarget: state.outputTarget,
+    androidNamespace: state.outputTarget === 'android-compose' ? state.compiled.androidNamespace : null,
     components: state.compiled.components,
     warnings,
     assetDownloadWarnings: assetWarnings,
@@ -644,7 +694,8 @@ async function downloadAllFiles() {
     assets: (state.compiled.assets || []).map(({ dataUrl, ...meta }) => meta)
   }, null, 2))
   const blob = await zip.generateAsync({ type: 'blob' })
-  downloadBlob(blob, `${state.compiled.rootClass}-UIKitForge.zip`)
+  const platformSuffix = state.outputTarget === 'android-compose' ? 'AndroidCompose' : 'UIKitForge'
+  downloadBlob(blob, `${state.compiled.rootClass}-${platformSuffix}.zip`)
   setStatus(assetWarnings.length ? `ZIP downloaded with ${assetWarnings.length} image asset warning(s).` : 'ZIP downloaded successfully.', assetWarnings.length ? 'error' : 'success', assetWarnings.slice(0, 2))
 }
 
@@ -692,7 +743,28 @@ function architectureFileSuffixes(architecture) {
   return architecture === 'mvc' ? 'ViewController' : architecture === 'mvvm' ? 'ViewController/ViewModel' : 'ViewController/ViewModel/Router'
 }
 
-function generateReadme(compiled) {
+function generateReadme(compiled, outputTarget = state.outputTarget) {
+  if (outputTarget === 'android-compose') {
+    const packagePath = `${compiled.androidNamespace}.uikitforge.generated`.replaceAll('.', '/')
+    return `# ${compiled.rootClass}
+
+Generated by UIKitForge · Android Jetpack Compose integration module.
+
+## Copy into an existing Android app
+
+- Copy \`Android/src/main/java/${packagePath}/\` into the app's Java source tree.
+- Copy \`Android/src/main/res/\` into the app's resources.
+- Set the Android module's \`namespace\` to \`${compiled.androidNamespace}\`; this is the package for generated \`R\` references.
+- Enable Compose in \`buildFeatures\` and use the Compose compiler plugin matching the app's Kotlin plugin.
+- Add Compose Foundation and UI dependencies using the host app's Compose BOM. This generator is checked against BOM \`2026.08.00\`.
+- Render \`${compiled.rootClass}()\` from the app's Compose content.
+
+The generated screen preserves the Figma sample layout and assets. Connect app data, navigation and prototype interactions in the consuming app; Figma pixels do not define those contracts.
+
+References: [Compose setup](https://developer.android.com/develop/ui/compose/setup-compose-dependencies-and-compiler), [Compose resources](https://developer.android.com/develop/ui/compose/resources), [Android namespace and R classes](https://developer.android.com/build/configure-app-module).
+`
+  }
+
   return `# ${compiled.rootClass}
 
 Generated by UIKitForge · deployment target: iOS ${compiled.deploymentTarget}+ · architecture: ${ARCHITECTURE_LABELS[compiled.architecture] || 'MVVM-R'}

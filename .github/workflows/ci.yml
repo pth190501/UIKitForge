@@ -145,6 +145,42 @@ jobs:
       - name: swiftlint --strict
         run: swiftlint lint --strict --config ci-artifacts/.swiftlint.yml $(find ci-artifacts -name '*.swift')
 
+  android-validate:
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+
+      - name: Setup Node
+        uses: actions/setup-node@v5
+        with:
+          node-version: 22
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Dump generated Android fixtures
+        run: node scripts/ci-dump-fixtures.mjs
+
+      - name: Setup Java
+        uses: actions/setup-java@v5
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - name: Install Android API 37
+        run: |
+          yes | "$ANDROID_SDK_ROOT/cmdline-tools/latest/bin/sdkmanager" --licenses || true
+          "$ANDROID_SDK_ROOT/cmdline-tools/latest/bin/sdkmanager" "platforms;android-37" "build-tools;36.0.0"
+
+      - name: Setup Gradle
+        uses: gradle/actions/setup-gradle@v6
+        with:
+          gradle-version: '9.3.1'
+
+      - name: Compile generated Compose fixtures
+        run: gradle -p ci/android build
+
   # Độ giống thật: render code UIKit-Code sinh ra trên iOS Simulator, so pixel với ảnh Figma (secret FIGMA_TOKEN).
   # Chưa chặn merge (continue-on-error) — con số hiện ở job summary, ảnh render/diff trong artifact.
   visual-fidelity:
